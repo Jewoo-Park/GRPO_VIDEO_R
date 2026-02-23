@@ -2,7 +2,7 @@
 
 이 문서는 이 레포에서 **Urban Video Bench(UVB)** 데이터셋으로 **Qwen2.5-VL** 모델을 **GRPO** 방식으로 학습/추론하는 최소 실행 절차입니다.
 
-**주의**: 아래 모든 명령은 **레포 루트**(TON_Codex 디렉터리)에서 실행하세요. 문제 발생 시 `TROUBLESHOOTING.md`를 참고하세요.
+**주의**: 아래 모든 명령은 **레포 루트**에서 실행하세요. 문제 발생 시 `TROUBLESHOOTING.md`를 참고하세요.
 
 ## One-click Training
 
@@ -10,12 +10,6 @@
 
 ```bash
 bash src/scripts/run_grpo_uvb_answer_only.sh
-```
-
-복구(경로 재생성/리사이즈) 포함 원클릭:
-
-```bash
-bash src/scripts/uvb_recover_and_train_a100.sh
 ```
 
 ## 0. Environment Setup
@@ -138,14 +132,6 @@ python src/eval/uvb_eval_only.py \
 출력 메트릭:
 - `answer_accuracy`
 - `answer_format_rate`
-
-## One-command (복구 + 학습)
-
-A100 환경에서 데이터 복구 + 학습을 한 번에 돌릴 때:
-
-```bash
-bash src/scripts/uvb_recover_and_train_a100.sh
-```
 
 ## 빠른 확인 체크리스트
 

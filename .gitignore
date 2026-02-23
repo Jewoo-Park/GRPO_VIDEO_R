@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Training outputs/logs
+src/r1-v/outputs/
+src/r1-v/logs/
+logs/
+
+# Local environments
+.venv/
+venv/
+
+# Keep data out of Git in this repo
+data/

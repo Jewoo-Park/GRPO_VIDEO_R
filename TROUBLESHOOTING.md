@@ -8,8 +8,8 @@
 
 **모든 데이터 준비 스크립트와 학습 스크립트는 반드시 레포 루트에서 실행해야 합니다.**
 
-- ✅ `cd /path/to/TON_Codex && bash src/scripts/prepare_uvb_dataset.sh`
-- ❌ `cd /path/to/TON_Codex/src/scripts && bash prepare_uvb_dataset.sh`  
+- ✅ `cd /path/to/GRPO_Video && bash src/scripts/prepare_uvb_dataset.sh`
+- ❌ `cd /path/to/GRPO_Video/src/scripts && bash prepare_uvb_dataset.sh`  
   → 이렇게 하면 `python src/eval/...`가 `src/scripts/src/eval`를 찾아 실패합니다.
 
 QUICKSTART/문서에서 “레포 루트에서 실행”을 명시해 두는 것이 좋습니다.
@@ -30,12 +30,11 @@ QUICKSTART/문서에서 “레포 루트에서 실행”을 명시해 두는 것
 - `check_environment.sh`: Python 3.11+ 권장
 - RunPod/새 환경에서는 `conda create -n r1-v python=3.11` 등으로 3.11 사용을 권장합니다.
 
-### 1.3 vLLM / transformers 버전 충돌
+### 1.3 vLLM / transformers 버전
 
-- `setup.py`에는 `vllm==0.6.6.post1`, `setup.sh`에서는 `pip install vllm==0.7.2`로 덮어씁니다.
-- `setup.sh`가 나중에 실행되므로 최종적으로는 vLLM 0.7.2가 설치됩니다.
-- **문제**: `pip install -e ".[dev]"`만 하고 `setup.sh`를 안 돌리면 0.6.6이 남아 있고, 실제 학습 스크립트는 0.7.2를 전제로 할 수 있어 호환성 문제가 생길 수 있습니다.
-- **대처**: 반드시 **전체 `setup.sh`**를 한 번 끝까지 실행한 뒤 학습을 돌리세요.
+- 이 레포는 `setup.py`와 `setup.sh` 모두 `vllm==0.7.2` 기준으로 맞춰져 있습니다.
+- **주의**: `pip install -e ".[dev]"`만 실행하고 추가 설치를 생략하면 학습 시 모듈 누락이 날 수 있습니다.
+- **대처**: 반드시 **`setup.sh`를 끝까지 실행**한 뒤 학습을 시작하세요.
 
 ### 1.4 flash-attn 설치 실패
 
@@ -148,8 +147,8 @@ QUICKSTART/문서에서 “레포 루트에서 실행”을 명시해 두는 것
 ### 5.5 OOM (Out of Memory)
 
 - **조정 권장**: `NUM_GENERATIONS` 감소(예: 8→4), `MAX_PIXELS`/`MAX_PROMPT_LENGTH`/`MAX_COMPLETION_LENGTH` 감소, `VLLM_GPU_UTIL` 조정.
-- DeepSpeed 설정은 기본 `configs/zero1_no_optimizer.json`.  
-  메모리가 부족하면 `uvb_recover_and_train_a100.sh`에서 쓰는 식으로 zero2 offload 등을 검토할 수 있습니다.
+- DeepSpeed 설정은 기본 `configs/zero1_no_optimizer.json`.
+- 메모리가 부족하면 `NUM_GENERATIONS`, `MAX_PIXELS`, `MAX_PROMPT_LENGTH`, `MAX_COMPLETION_LENGTH`를 우선 줄여서 대응하세요.
 
 ### 5.6 configs 경로
 

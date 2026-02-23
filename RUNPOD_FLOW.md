@@ -1,4 +1,4 @@
-# TON_Codex 레포 흐름 및 RunPod 실행 가이드
+# GRPO_Video 레포 흐름 및 RunPod 실행 가이드
 
 이 문서는 **Urban Video Bench(UVB)** 데이터로 **Qwen2.5-VL**을 **GRPO** 방식으로 학습하는 이 레포의 전체 흐름과, **RunPod** 환경에서 실행할 때의 포인트를 정리한 것입니다.
 
@@ -79,8 +79,7 @@ GRPO JSONL 한 줄 예시 형식:
 ### 4.1 실행 경로
 
 - **기본 학습**: `bash src/scripts/run_grpo_uvb_answer_only.sh`
-- **복구+리사이즈+학습 한 번에**: `bash src/scripts/uvb_recover_and_train_a100.sh`  
-  (내부에서 GRPO JSONL 재생성, 선택적 프레임 리사이즈, DeepSpeed zero2 offload 설정 후 `run_grpo_uvb_answer_only.sh` 호출)
+- 단일 학습 진입점: `bash src/scripts/run_grpo_uvb_answer_only.sh`
 
 스크립트는 **레포 루트가 아니라** `src/r1-v`로 이동한 뒤, `PYTHONPATH=./src`로 `torchrun` 실행:
 
@@ -150,7 +149,7 @@ PYTHONPATH="./src" torchrun --nproc_per_node="${NUM_GPUS}" ... -m open_r1.grpo_u
 ### 5.2 RunPod에서 할 일
 
 1. **이 레포 클론**  
-   - RunPod 템플릿/스크립트에서 `git clone` 또는 코드 마운트 후 `cd TON_Codex`.
+   - RunPod 템플릿/스크립트에서 `git clone` 또는 코드 마운트 후 레포 루트로 이동.
 
 2. **경로**  
    - 모든 스크립트는 **레포 루트**에서 실행하는 것을 전제로 함.  
@@ -190,14 +189,6 @@ PYTHONPATH="./src" torchrun --nproc_per_node="${NUM_GPUS}" ... -m open_r1.grpo_u
    - `MAX_PIXELS` / `MAX_PROMPT_LENGTH` / `MAX_COMPLETION_LENGTH` 감소
    - `VLLM_GPU_UTIL` 조정
    - **학습 8장 / 테스트 16장**: 테스트만 16장 쓰려면 `VLLM_MAX_FRAMES_EVAL=16` (학습은 기본 8장 유지).
-   - `uvb_recover_and_train_a100.sh` 사용 시 `RESIZE_FRAMES=1`로 프레임 리사이즈 유지하면 메모리 절약에 도움
-
-7. **한 번에 복구+학습**  
-   - 데이터가 이미 있고, GRPO JSONL만 다시 만들고 프레임 리사이즈 후 학습하려면:
-     ```bash
-     RUN_SETUP=0 RESIZE_FRAMES=1 NUM_GPUS=1 bash src/scripts/uvb_recover_and_train_a100.sh
-     ```
-   - RunPod GPU 수에 맞게 `NUM_GPUS`/`CUDA_VISIBLE_DEVICES` 설정.
 
 ### 5.3 RunPod 관련 참고
 
@@ -212,6 +203,6 @@ PYTHONPATH="./src" torchrun --nproc_per_node="${NUM_GPUS}" ... -m open_r1.grpo_u
 
 - **데이터**: HuggingFace UVB → 메타 JSONL → 40% 샘플·8:2 분할 → 비디오 다운로드·프레임 추출 → GRPO용 JSONL.
 - **학습**: `open_r1.grpo_uvb`가 JSONL을 로드해 `Qwen2VLGRPOVLLMTrainerModified`로 vLLM 생성 + 정답/형식 보상 + GRPO 업데이트.
-- **RunPod**: 레포 루트에서 환경 설정 → 데이터 3단계 준비 → `NUM_GPUS`/경로/메모리만 맞춰 `run_grpo_uvb_answer_only.sh`(또는 `uvb_recover_and_train_a100.sh`) 실행하면 됨.
+- **RunPod**: 레포 루트에서 환경 설정 → 데이터 3단계 준비 → `NUM_GPUS`/경로/메모리만 맞춰 `run_grpo_uvb_answer_only.sh` 실행하면 됨.
 
 추가로 RunPod용 Dockerfile이나 스타트업 스크립트가 필요하면 그에 맞춰 설계해 줄 수 있습니다.
