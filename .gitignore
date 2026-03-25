@@ -4,8 +4,10 @@ __pycache__/
 
 # Training outputs/logs
 src/r1-v/outputs/
+src/r1-v/src/r1-v/outputs/
 src/r1-v/logs/
 logs/
+sft/outputs/
 
 # Local environments
 .venv/

@@ -1,3 +1,5 @@
+### → 샘플링/분할 → 비디오 다운로드 → 프레임 추출
+
 import argparse
 import json
 import os
@@ -211,7 +213,9 @@ def extract_frames_for_samples(
 def main() -> None:
     parser = argparse.ArgumentParser(description="UVB sampling/splitting/video download/frame extraction pipeline.")
     parser.add_argument("--input-jsonl", type=str, default="data/urban_video_bench/urban_video_bench_train.jsonl")
-    parser.add_argument("--sample-ratio", type=float, default=0.4)
+    # Default to full dataset (no sampling). If sampling is needed later, change this default
+    # or pass --sample-ratio explicitly at runtime (e.g., 0.4 for 40%).
+    parser.add_argument("--sample-ratio", type=float, default=1.0)
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset-id", type=str, default="EmbodiedCity/UrbanVideo-Bench")
@@ -219,6 +223,11 @@ def main() -> None:
     parser.add_argument("--output-dir", type=str, default="data/urban_video_bench/processed")
     parser.add_argument("--num-frames", type=int, default=32)
     parser.add_argument("--max-frame-size", type=int, default=768)
+    parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip HF download and use already-downloaded local videos",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input_jsonl)
@@ -231,11 +240,12 @@ def main() -> None:
         )
 
     print("=" * 70)
-    print("Step 1/4: Load metadata and sample 40% by question_category")
+    print("Step 1/4: Load metadata and sample by question_category")
     print("=" * 70)
     rows = load_jsonl(input_path)
     print(f"Loaded rows: {len(rows)}")
     sampled_rows, sample_stats = grouped_sample(rows, sample_ratio=args.sample_ratio, seed=args.seed)
+    print(f"Sampling ratio: {args.sample_ratio:.3f}")
     print(f"Sampled rows: {len(sampled_rows)}")
 
     print("=" * 70)
@@ -247,7 +257,9 @@ def main() -> None:
     print(f"Train rows: {len(train_rows)}")
     print(f"Test rows:  {len(test_rows)}")
 
-    write_json(output_dir / "sampled_40_percent.json", sampled_rows)
+    sample_percent = int(round(args.sample_ratio * 100))
+    sampled_filename = f"sampled_{sample_percent}_percent.json"
+    write_json(output_dir / sampled_filename, sampled_rows)
     write_jsonl(output_dir / "train_80.jsonl", train_rows)
     write_jsonl(output_dir / "test_20.jsonl", test_rows)
     write_json(output_dir / "sample_stats.json", sample_stats)
@@ -256,9 +268,12 @@ def main() -> None:
     print("=" * 70)
     print("Step 3/4: Download mp4 files from HF dataset repo")
     print("=" * 70)
-    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
-    download_videos(dataset_id=args.dataset_id, local_dir=video_dir, token=hf_token)
-    print(f"Video download completed under: {video_dir}")
+    if args.skip_download:
+        print(f"Skipping download. Using existing local videos under: {video_dir}")
+    else:
+        hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        download_videos(dataset_id=args.dataset_id, local_dir=video_dir, token=hf_token)
+        print(f"Video download completed under: {video_dir}")
 
     print("=" * 70)
     print("Step 4/4: Decode videos and save sampled frames")
@@ -283,6 +298,8 @@ def main() -> None:
 
     summary = {
         "input_rows": len(rows),
+        "sampling_ratio": args.sample_ratio,
+        "sampled_filename": sampled_filename,
         "sampled_rows": len(sampled_rows),
         "train_rows": len(train_rows),
         "test_rows": len(test_rows),

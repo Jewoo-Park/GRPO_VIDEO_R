@@ -85,6 +85,18 @@ else
     print_check 1 "NVIDIA drivers not found (nvidia-smi not available)"
 fi
 
+# Check CUDA toolkit (nvcc)
+if command -v nvcc &> /dev/null; then
+    NVCC_VERSION=$(nvcc --version | awk -F'release ' '/release/{print $2}' | awk -F',' '{print $1}')
+    if [[ "${NVCC_VERSION}" == "12.4" ]]; then
+        print_check 0 "nvcc release ${NVCC_VERSION} (expected 12.4)"
+    else
+        print_warning "nvcc release ${NVCC_VERSION} (runbook target: 12.4)"
+    fi
+else
+    print_warning "nvcc not found (CUDA toolkit check skipped)"
+fi
+
 # Check CUDA availability in Python
 if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
     CUDA_VERSION=$(python -c "import torch; print(torch.version.cuda)" 2>/dev/null)
@@ -111,10 +123,42 @@ check_package() {
 
 check_package "torch"
 check_package "transformers"
+check_package "peft"
+check_package "trl"
 check_package "datasets"
 check_package "vllm"
 check_package "deepspeed"
 check_package "accelerate"
+check_package "flash_attn"
+
+echo ""
+echo "Version compatibility checks (runbook target):"
+python - <<'PY' 2>/dev/null || true
+import importlib
+
+targets = {
+    "torch": "2.5.1+cu124",
+    "transformers": None,  # pinned by git revision in setup
+    "peft": "0.14.0",
+    "trl": "0.14.0",
+    "deepspeed": "0.15.4",
+    "vllm": "0.7.2",
+    "flash_attn": "2.6.3",
+}
+
+for pkg, target in targets.items():
+    try:
+        mod = importlib.import_module(pkg)
+        got = getattr(mod, "__version__", "unknown")
+        if target is None:
+            print(f"  - {pkg}: {got}")
+        elif got == target:
+            print(f"  - {pkg}: {got} (OK)")
+        else:
+            print(f"  - {pkg}: {got} (target {target})")
+    except Exception:
+        print(f"  - {pkg}: not installed")
+PY
 
 # Check optional packages
 echo ""
@@ -130,16 +174,26 @@ echo ""
 echo "4. Checking Disk Space..."
 echo "-----------------------------------"
 
-# Check available disk space
-DISK_AVAILABLE=$(df -h . | awk 'NR==2 {print $4}')
-DISK_AVAILABLE_GB=$(df -BG . | awk 'NR==2 {print $4}' | sed 's/G//')
+# Check available disk space (portable across Linux/macOS)
+DISK_AVAILABLE_HUMAN=$(df -h . | awk 'NR==2 {print $4}')
+DISK_AVAILABLE_KB=$(df -Pk . | awk 'NR==2 {print $4}')
 
-echo "   Available disk space: $DISK_AVAILABLE"
-if [ "$DISK_AVAILABLE_GB" -ge 100 ]; then
-    print_check 0 "Disk space: ${DISK_AVAILABLE_GB}GB (>= 100GB)"
+if [[ -n "${DISK_AVAILABLE_KB}" && "${DISK_AVAILABLE_KB}" =~ ^[0-9]+$ ]]; then
+    DISK_AVAILABLE_GB=$((DISK_AVAILABLE_KB / 1024 / 1024))
 else
-    print_warning "Disk space: ${DISK_AVAILABLE_GB}GB (recommend >= 100GB)"
-    echo "   Needed for: model (~30GB) + data (~10GB) + checkpoints (~60GB)"
+    DISK_AVAILABLE_GB=""
+fi
+
+echo "   Available disk space: ${DISK_AVAILABLE_HUMAN}"
+if [[ -n "${DISK_AVAILABLE_GB}" ]]; then
+    if [ "${DISK_AVAILABLE_GB}" -ge 100 ]; then
+        print_check 0 "Disk space: ${DISK_AVAILABLE_GB}GB (>= 100GB)"
+    else
+        print_warning "Disk space: ${DISK_AVAILABLE_GB}GB (recommend >= 100GB)"
+        echo "   Needed for: model (~30GB) + data (~10GB) + checkpoints (~60GB)"
+    fi
+else
+    print_warning "Unable to parse disk space in GB"
 fi
 
 echo ""
@@ -160,9 +214,21 @@ check_path() {
 check_path "src/r1-v/src/open_r1/grpo_uvb.py"
 check_path "src/scripts/run_grpo_uvb_answer_only.sh"
 check_path "src/scripts/prepare_uvb_dataset.sh"
-check_path "src/scripts/prepare_uvb_40_split_download_frames.sh"
+check_path "src/scripts/prepare_uvb_full_split_local_videos.sh"
 check_path "src/scripts/prepare_uvb_grpo_data.sh"
 check_path "src/r1-v/configs/zero1_no_optimizer.json"
+
+MERGED_MODEL_DIR="${MERGED_MODEL_DIR:-sft/outputs/qwen25vl3b_lora_merged_from_sft40}"
+echo ""
+echo "Merged model metadata check (${MERGED_MODEL_DIR})..."
+if [ -d "${MERGED_MODEL_DIR}" ]; then
+    check_path "${MERGED_MODEL_DIR}/config.json"
+    check_path "${MERGED_MODEL_DIR}/tokenizer.json"
+    check_path "${MERGED_MODEL_DIR}/tokenizer_config.json"
+    check_path "${MERGED_MODEL_DIR}/preprocessor_config.json"
+else
+    print_warning "Merged model dir not found: ${MERGED_MODEL_DIR}"
+fi
 
 echo ""
 echo "6. Checking Network Access..."
@@ -182,10 +248,9 @@ if [ "$ALL_CHECKS_PASSED" = true ]; then
     echo "You're ready to start training."
     echo ""
     echo "Next steps:"
-    echo "  1. Prepare UVB metadata: bash src/scripts/prepare_uvb_dataset.sh"
-    echo "  2. Sample/split/download/extract: bash src/scripts/prepare_uvb_40_split_download_frames.sh"
-    echo "  3. Build GRPO JSONL: bash src/scripts/prepare_uvb_grpo_data.sh"
-    echo "  4. Start training: bash src/scripts/run_grpo_uvb_answer_only.sh"
+    echo "  1. Prepare Video-R1 train data: bash src/scripts/prepare_video_r1_grpo_data.sh"
+    echo "  2. Prepare UVB evaluation data: bash src/scripts/prepare_uvb_grpo_data.sh"
+    echo "  3. Start training/eval: bash src/scripts/run_grpo_uvb_answer_only.sh"
 else
     echo -e "${RED}✗ Some checks failed${NC}"
     echo "Please fix the issues above before training."

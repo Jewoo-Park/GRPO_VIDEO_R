@@ -23,6 +23,7 @@ import transformers
 from datasets import Dataset, IterableDataset
 from packaging import version
 from transformers import (
+    AutoConfig,
     AriaForConditionalGeneration,
     AriaProcessor,
     AutoModelForCausalLM,
@@ -39,6 +40,7 @@ from transformers import (
     is_wandb_available,
 )
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.utils import is_peft_available
 
 from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
@@ -50,8 +52,45 @@ from PIL import Image
 import copy
 
 
+def _coerce_qwen25_text_config(cfg: Any) -> Any:
+    """Normalize Qwen2.5-VL text config for transformers compatibility."""
+    if cfg is None:
+        return cfg
+
+    text_cfg = getattr(cfg, "text_config", None)
+    if text_cfg is None:
+        return cfg
+
+    if isinstance(text_cfg, dict):
+        text_cfg = Qwen2Config(**text_cfg)
+        cfg.text_config = text_cfg
+
+    promote_fields = (
+        "vocab_size",
+        "hidden_size",
+        "intermediate_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "max_position_embeddings",
+        "rms_norm_eps",
+        "hidden_act",
+        "initializer_range",
+        "tie_word_embeddings",
+        "use_cache",
+        "attention_dropout",
+        "rope_theta",
+    )
+    for field_name in promote_fields:
+        value = getattr(text_cfg, field_name, None)
+        if value is not None:
+            setattr(cfg, field_name, value)
+
+    return cfg
+
+
 if is_peft_available():
-    from peft import PeftConfig, get_peft_model
+    from peft import PeftConfig, PeftModel, get_peft_model
 
 if is_wandb_available():
     import wandb
@@ -188,15 +227,36 @@ class Qwen2VLGRPOTrainer(Trainer):
             model_init_kwargs["use_cache"] = (
                 False if args.gradient_checkpointing else model_init_kwargs.get("use_cache")
             )
-            if "Qwen2-VL" in model_id:
+            # Use config.model_type for local paths (e.g. merged SFT model) so Qwen2.5-VL is recognized
+            _model_type = None
+            _config = None
+            try:
+                _config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+                _model_type = getattr(_config, "model_type", None)
+            except Exception:
+                pass
+            if _model_type is None and _config is None:
+                model_id_lower = model_id.lower()
+                if "qwen2.5" in model_id_lower or "qwen25" in model_id_lower or "qwen2_5" in model_id_lower:
+                    _model_type = "qwen2_5_vl"
+            if _model_type == "qwen2_vl" or "Qwen2-VL" in model_id:
                 model = Qwen2VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
-                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
+            elif _model_type == "qwen2_5_vl" or "Qwen2.5-VL" in model_id:
+                model_init_kwargs.pop("use_cache", None)
+                try:
+                    cfg = _coerce_qwen25_text_config(_config or AutoConfig.from_pretrained(model_id, trust_remote_code=True))
+                except Exception:
+                    cfg = None
+                if cfg is not None:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model, config=cfg, **model_init_kwargs
+                    )
+                else:
+                    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
             elif "Aria" in model_id:
                 model_init_kwargs.pop("use_cache")
                 model = AriaForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
             else:
-                # model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model, **model_init_kwargs)
                 model = AutoModelForCausalLM.from_pretrained(model, **model_init_kwargs)
         else:
             model_id = model.config._name_or_path
@@ -211,14 +271,36 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Reference model
         if is_deepspeed_zero3_enabled():
-            if "Qwen2-VL" in model_id:
+            _ref_type = None
+            _ref_config = None
+            try:
+                _ref_config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+                _ref_type = getattr(_ref_config, "model_type", None)
+            except Exception:
+                pass
+            if _ref_type is None and hasattr(model, "config"):
+                _ref_type = getattr(model.config, "model_type", None)
+            if _ref_type is None:
+                model_id_lower = model_id.lower()
+                if "qwen2.5" in model_id_lower or "qwen25" in model_id_lower or "qwen2_5" in model_id_lower:
+                    _ref_type = "qwen2_5_vl"
+            if _ref_type == "qwen2_vl" or "Qwen2-VL" in model_id:
                 self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
-            elif "Qwen2.5-VL" in model_id:
-                self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
+            elif _ref_type == "qwen2_5_vl" or "Qwen2.5-VL" in model_id:
+                model_init_kwargs.pop("use_cache", None)
+                try:
+                    ref_cfg = _coerce_qwen25_text_config(_ref_config or AutoConfig.from_pretrained(model_id, trust_remote_code=True))
+                except Exception:
+                    ref_cfg = None
+                if ref_cfg is not None:
+                    self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                        model_id, config=ref_cfg, **model_init_kwargs
+                    )
+                else:
+                    self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             elif "Aria" in model_id:
                 self.ref_model = AriaForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
             else:
-                # self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **model_init_kwargs)
                 self.ref_model = AutoModelForCausalLM.from_pretrained(model_id, **model_init_kwargs)
         elif peft_config is None:
             # If PEFT configuration is not provided, create a reference model based on the initial model.
@@ -230,12 +312,19 @@ class Qwen2VLGRPOTrainer(Trainer):
 
         # Processing class
         if processing_class is None:
-            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id or "Aria" in model_id:
+            model_type = getattr(getattr(model, "config", None), "model_type", "")
+            is_multimodal_model = (
+                model_type in {"qwen2_vl", "qwen2_5_vl"}
+                or "Aria" in model_id
+                or "Qwen2-VL" in model_id
+                or "Qwen2.5-VL" in model_id
+            )
+            if is_multimodal_model:
                 processing_class = AutoProcessor.from_pretrained(model_id)
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id
                 processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
-                if "Qwen" in model_id or "Qwen2.5-VL" in model_id:
+                if model_type in {"qwen2_vl", "qwen2_5_vl"} or "Qwen" in model_id:
                     processing_class.image_processor.max_pixels = max_pixels
                     processing_class.image_processor.min_pixels = min_pixels
             else:

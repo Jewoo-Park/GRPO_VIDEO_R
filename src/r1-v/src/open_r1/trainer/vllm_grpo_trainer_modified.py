@@ -14,7 +14,10 @@
 
 import os
 import textwrap
+import importlib
+import inspect
 from collections import defaultdict
+from contextlib import nullcontext, contextmanager
 from typing import Any, Callable, Optional, Union
 from accelerate.utils.other import is_compiled_module
 from accelerate.utils import broadcast_object_list, gather, gather_object
@@ -28,6 +31,7 @@ from packaging import version
 from transformers import (
     AriaForConditionalGeneration,
     AriaProcessor,
+    AutoConfig,
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
     AutoProcessor,
@@ -41,6 +45,7 @@ from transformers import (
     TrainerCallback,
     is_wandb_available,
 )
+from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
 from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
 from transformers.utils import is_peft_available
 
@@ -64,7 +69,7 @@ import copy
 from PIL import Image
 
 if is_peft_available():
-    from peft import PeftConfig, get_peft_model
+    from peft import PeftConfig, PeftModel, get_peft_model
 
 if is_vllm_available():
     from vllm import LLM, SamplingParams
@@ -79,11 +84,55 @@ from torch.utils.data import Sampler
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
 
+def _coerce_qwen25_text_config(cfg: Any) -> Any:
+    """Normalize Qwen2.5-VL text config for transformers/vLLM compatibility."""
+    if cfg is None:
+        return cfg
+
+    text_cfg = getattr(cfg, "text_config", None)
+    if text_cfg is None:
+        return cfg
+
+    if isinstance(text_cfg, dict):
+        text_cfg = Qwen2Config(**text_cfg)
+        cfg.text_config = text_cfg
+
+    # Some merged checkpoints keep canonical 3B text architecture only under
+    # text_config, while top-level fields can drift to incompatible defaults.
+    # Promote key fields to top-level so loaders agree on tensor shapes.
+    promote_fields = (
+        "vocab_size",
+        "hidden_size",
+        "intermediate_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "max_position_embeddings",
+        "rms_norm_eps",
+        "hidden_act",
+        "initializer_range",
+        "tie_word_embeddings",
+        "use_cache",
+        "attention_dropout",
+        "rope_theta",
+    )
+    for field_name in promote_fields:
+        value = getattr(text_cfg, field_name, None)
+        if value is not None:
+            setattr(cfg, field_name, value)
+
+    return cfg
+
+
 def _patch_vllm_rope_scaling_conflict() -> None:
     """Make vLLM tolerate legacy/modern rope_scaling key conflicts in HF configs."""
     try:
         import vllm.transformers_utils.config as vllm_config
     except Exception:
+        return
+
+    # Newer vLLM versions removed/renamed this helper; skip patch in that case.
+    if not hasattr(vllm_config, "patch_rope_scaling_dict"):
         return
 
     if getattr(vllm_config, "_codex_rope_patch_applied", False):
@@ -105,6 +154,132 @@ def _patch_vllm_rope_scaling_conflict() -> None:
 
     vllm_config.patch_rope_scaling_dict = _patched_patch_rope_scaling_dict
     vllm_config._codex_rope_patch_applied = True
+
+
+def _build_vllm_profiling_patch():
+    """Return a best-effort patch for vLLM profiling check across versions."""
+    candidates = [
+        ("vllm.worker.worker", "Worker", "_assert_memory_footprint_increased_during_profiling"),
+        ("vllm.v1.worker.gpu_worker", "GPUWorker", "_assert_memory_footprint_increased_during_profiling"),
+    ]
+    for module_name, class_name, method_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            worker_cls = getattr(module, class_name)
+            if hasattr(worker_cls, method_name):
+                return patch.object(worker_cls, method_name, return_value=None)
+        except Exception:
+            continue
+    return nullcontext()
+
+@contextmanager
+def _temporary_cuda_device(device: str):
+    """
+    Temporarily set current CUDA device (torch.cuda.current_device()).
+    vLLM/xFormers may allocate some tensors on the *current* device even if the model
+    lives on a different one, so we scope the change to vLLM init/generate calls.
+    """
+    if not isinstance(device, str) or not device.startswith("cuda:") or not torch.cuda.is_available():
+        yield
+        return
+    try:
+        idx = int(device.split(":", 1)[1])
+    except Exception:
+        yield
+        return
+    prev = torch.cuda.current_device()
+    torch.cuda.set_device(idx)
+    try:
+        yield
+    finally:
+        # Best-effort restore for the training process (usually cuda:0).
+        try:
+            torch.cuda.set_device(prev)
+        except Exception:
+            pass
+
+
+def _peft_state_dict_to_merged_state_dict(
+    state_dict: dict[str, torch.Tensor],
+    prefix_strip: str = "base_model.model.",
+    lora_alpha_override: Optional[float] = None,
+) -> list[tuple[str, torch.Tensor]]:
+    """
+    Convert a PEFT model state_dict (with base_layer / lora_A / lora_B keys) into a
+    single merged state_dict that vLLM can load (plain weight keys, no .base_layer).
+    Merged weight = base_layer + (lora_B @ lora_A) * (lora_alpha / r).
+    """
+    if not state_dict:
+        return []
+
+    def strip_prefix(k: str) -> str:
+        if prefix_strip and k.startswith(prefix_strip):
+            return k[len(prefix_strip) :]
+        if k.startswith("base_model."):
+            return k[len("base_model.") :]
+        return k
+
+    # Collect keys and decide what to emit
+    out: dict[str, torch.Tensor] = {}
+    seen_base = set()
+
+    for key, value in state_dict.items():
+        if "lora_A" in key or "lora_B" in key:
+            continue
+        short = strip_prefix(key)
+        if ".base_layer.weight" in key:
+            base_short = short.replace(".base_layer.weight", ".weight")
+            lora_a_key = key.replace(".base_layer.weight", ".lora_A.default.weight")
+            lora_b_key = key.replace(".base_layer.weight", ".lora_B.default.weight")
+            if lora_a_key in state_dict and lora_b_key in state_dict:
+                base_w = value
+                lora_a = state_dict[lora_a_key]
+                lora_b = state_dict[lora_b_key]
+                r = lora_a.shape[0]
+                lora_alpha = lora_alpha_override if lora_alpha_override is not None else 32
+                scale = lora_alpha / max(r, 1)
+                merged = base_w + (lora_b @ lora_a) * scale
+                out[base_short] = merged.to(dtype=base_w.dtype, device=base_w.device)
+            else:
+                out[base_short] = value
+            seen_base.add(base_short)
+            continue
+        if ".base_layer.bias" in key:
+            base_short = short.replace(".base_layer.bias", ".bias")
+            out[base_short] = value
+            continue
+        if short not in out and not short.endswith(".lora_A.default.weight") and not short.endswith(".lora_B.default.weight"):
+            out[short] = value
+
+    return list(out.items())
+
+
+def _get_lora_alpha_from_model(model: Any) -> Optional[float]:
+    """Try to get lora_alpha from a PEFT model for use in merge scaling."""
+    if not is_peft_available():
+        return None
+    if not isinstance(model, PeftModel):
+        return None
+    cfg = getattr(model, "peft_config", None) or {}
+    default = cfg.get("default") if isinstance(cfg, dict) else None
+    if default is not None:
+        return getattr(default, "lora_alpha", None)
+    return None
+
+
+def _filter_vllm_incompatible_weight_keys(
+    items: list[tuple[str, torch.Tensor]],
+) -> list[tuple[str, torch.Tensor]]:
+    """
+    Drop bitsandbytes-only metadata keys that vLLM loader does not accept.
+    This enables USE_VLLM=true with 8-bit training paths.
+    """
+    filtered: list[tuple[str, torch.Tensor]] = []
+    for key, value in items:
+        if key.endswith(".SCB") or key.endswith(".weight_format") or ".SCB." in key:
+            continue
+        filtered.append((key, value))
+    return filtered
 
 
 class Qwen2VLGRPOVLLMTrainerModified(Trainer):
@@ -130,6 +305,7 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
         max_pixels: Optional[int] = 12845056,
         min_pixels: Optional[int] = 3136,
         attn_implementation: str = "flash_attention_2",
+        reward_weights: Optional[list[float]] = None,
     ):
 
         # Args
@@ -144,6 +320,12 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
         model_init_kwargs["attn_implementation"] = attn_implementation
         if isinstance(model, str):
             model_id = model
+            model_type = None
+            try:
+                model_type = AutoConfig.from_pretrained(model_id).model_type
+            except Exception:
+                # Fall back to path/name heuristics if config probing fails.
+                model_type = None
             torch_dtype = model_init_kwargs.get("torch_dtype")
             if (
                 isinstance(torch_dtype, torch.dtype)
@@ -165,14 +347,15 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                 if args.gradient_checkpointing
                 else model_init_kwargs.get("use_cache")
             )
-            if "Qwen2-VL" in model_id:
+            if model_type == "qwen2_vl" or "Qwen2-VL" in model_id:
                 model = Qwen2VLForConditionalGeneration.from_pretrained(
                     model, **model_init_kwargs
                 )
-            elif "Qwen2.5-VL" in model_id:
+            elif model_type == "qwen2_5_vl" or "Qwen2.5-VL" in model_id:
                 model_init_kwargs.pop("use_cache", None)
+                cfg = _coerce_qwen25_text_config(AutoConfig.from_pretrained(model_id))
                 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    model, **model_init_kwargs
+                    model, config=cfg, **model_init_kwargs
                 )
             elif "Aria" in model_id:
                 model_init_kwargs.pop("use_cache")
@@ -194,14 +377,20 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
 
         # Reference model
         if is_deepspeed_zero3_enabled():
-            if "Qwen2-VL" in model_id:
+            ref_model_type = None
+            try:
+                ref_model_type = AutoConfig.from_pretrained(model_id).model_type
+            except Exception:
+                ref_model_type = None
+            if ref_model_type == "qwen2_vl" or "Qwen2-VL" in model_id:
                 self.ref_model = Qwen2VLForConditionalGeneration.from_pretrained(
                     model_id, **model_init_kwargs
                 )
-            elif "Qwen2.5-VL" in model_id:
+            elif ref_model_type == "qwen2_5_vl" or "Qwen2.5-VL" in model_id:
                 model_init_kwargs.pop("use_cache", None)
+                ref_cfg = _coerce_qwen25_text_config(AutoConfig.from_pretrained(model_id))
                 self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    model_id, **model_init_kwargs
+                    model_id, config=ref_cfg, **model_init_kwargs
                 )
             elif "Aria" in model_id:
                 self.ref_model = AriaForConditionalGeneration.from_pretrained(
@@ -221,14 +410,22 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
 
         # Processing class
         if processing_class is None:
-            if "Qwen" in model_id or "Aria" in model_id:
+            model_type = getattr(getattr(model, "config", None), "model_type", "")
+            # Prefer model_type so local paths (e.g. merged SFT) always get AutoProcessor when VL.
+            is_multimodal_model = (
+                model_type in {"qwen2_vl", "qwen2_5_vl"}
+                or "Aria" in model_id
+                or "Qwen" in model_id
+            )
+            if is_multimodal_model:
                 processing_class = AutoProcessor.from_pretrained(model_id)
                 pad_token_id = processing_class.tokenizer.pad_token_id
                 processing_class.pad_token_id = pad_token_id
                 processing_class.eos_token_id = processing_class.tokenizer.eos_token_id
-                if "Qwen" in model_id:
+                if model_type in {"qwen2_vl", "qwen2_5_vl"} or "Qwen" in model_id:
                     processing_class.image_processor.max_pixels = max_pixels
                     processing_class.image_processor.min_pixels = min_pixels
+                processing_class.tokenizer.padding_side = "left"
             else:
                 processing_class = AutoTokenizer.from_pretrained(
                     model.config._name_or_path, padding_side="left"
@@ -244,6 +441,47 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                     reward_func, num_labels=1, **model_init_kwargs
                 )
         self.reward_funcs = reward_funcs
+        self.reward_func_names = []
+        for reward_func in self.reward_funcs:
+            if isinstance(reward_func, nn.Module):
+                name = reward_func.config._name_or_path.split("/")[-1]
+            else:
+                name = reward_func.__name__
+            self.reward_func_names.append(name)
+
+        # Reward weights (default: uniform). Prefer explicit argument from script.
+        # Backward-compatible env var fallback is kept for legacy runs.
+        resolved_reward_weights = [1.0] * len(self.reward_funcs)
+        if reward_weights is not None:
+            if len(reward_weights) != len(resolved_reward_weights):
+                raise ValueError(
+                    "reward_weights length must match number of reward functions "
+                    f"({len(resolved_reward_weights)}), got {len(reward_weights)}."
+                )
+            resolved_reward_weights = [float(x) for x in reward_weights]
+        else:
+            weights_env = os.getenv("UVB_REWARD_WEIGHTS", "").strip()
+            if weights_env:
+                parsed = [x.strip() for x in weights_env.split(",") if x.strip() != ""]
+                if len(parsed) != len(resolved_reward_weights):
+                    raise ValueError(
+                        "UVB_REWARD_WEIGHTS length must match number of reward functions "
+                        f"({len(resolved_reward_weights)}), got {len(parsed)}."
+                    )
+                resolved_reward_weights = [float(x) for x in parsed]
+
+            acc_w_env = os.getenv("UVB_ANSWER_ACCURACY_WEIGHT")
+            fmt_w_env = os.getenv("UVB_ANSWER_FORMAT_WEIGHT")
+            if acc_w_env is not None:
+                for idx, name in enumerate(self.reward_func_names):
+                    if name == "answer_accuracy_reward":
+                        resolved_reward_weights[idx] = float(acc_w_env)
+            if fmt_w_env is not None:
+                for idx, name in enumerate(self.reward_func_names):
+                    if name == "answer_format_reward":
+                        resolved_reward_weights[idx] = float(fmt_w_env)
+
+        self.reward_weights = resolved_reward_weights
 
         # Reward processing class
         if reward_processing_classes is None:
@@ -307,6 +545,14 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
         self.use_vllm = args.use_vllm
         self.vllm_max_pixels = max_pixels
         self.vllm_min_pixels = min_pixels
+        # Newer/older vLLM builds may silently drop max_pixels/min_pixels in
+        # mm_processor_kwargs. Keep it opt-in and enforce pixel bounds via
+        # local image resizing before generate().
+        self.vllm_use_mm_processor_kwargs = (
+            os.getenv("VLLM_USE_MM_PROCESSOR_KWARGS", "false").strip().lower()
+            == "true"
+        )
+        self._vllm_device: Optional[str] = None
         # Keep vLLM multimodal batches small to avoid xformers vision kernel crashes.
         self.vllm_prompt_batch_size = max(
             1, int(os.getenv("VLLM_PROMPT_BATCH_SIZE", "1"))
@@ -371,35 +617,55 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                 world_size_patch = patch(
                     "torch.distributed.get_world_size", return_value=1
                 )
-                profiling_patch = patch(
-                    "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling",
-                    return_value=None,
-                )
-                with world_size_patch, profiling_patch:
+                profiling_patch = _build_vllm_profiling_patch()
+                self._vllm_device = vllm_device
+                with world_size_patch, profiling_patch, _temporary_cuda_device(vllm_device):
                     _patch_vllm_rope_scaling_conflict()
                     print("vllm is running on: ", vllm_device)
                     print('model_path: ', model.name_or_path)
-                    self.llm = LLM(
-                        model=model.name_or_path,
-                        device=vllm_device,
-                        gpu_memory_utilization=self.args.vllm_gpu_memory_utilization,
-                        dtype=torch.bfloat16,
+                    # Match vLLM image-item limit to the actual per-prompt frame cap (default 8 frames).
+                    vllm_max_frames = getattr(args, "vllm_max_frames", None) or self.vllm_max_frames
+                    max_mm_images = max(1, int(vllm_max_frames))
+                    llm_kwargs = {
+                        "model": model.name_or_path,
+                        "gpu_memory_utilization": self.args.vllm_gpu_memory_utilization,
+                        "dtype": torch.bfloat16,
                         # Automatic Prefix Caching caches the KV cache of existing queries, so that a new query can
                         # directly reuse the KV cache if it shares the same prefix with one of the existing queries.
                         # This is particularly useful here because we generate completions from the same prompts.
-                        enable_prefix_caching=True,
-                        enforce_eager=True,
-                        mm_processor_kwargs=(
-                            {
-                                "max_pixels": max_pixels,
-                                "min_pixels": min_pixels,
-                            }
-                            if "Qwen2-VL" in model_id or "Qwen2.5-VL" in model_id
-                            else None
-                        ),
-                        max_model_len=args.max_prompt_length + args.max_completion_length,
-                        limit_mm_per_prompt={"image": 16},
+                        "enable_prefix_caching": True,
+                        "enforce_eager": True,
+                        "max_model_len": args.max_prompt_length + args.max_completion_length,
+                        "limit_mm_per_prompt": {"image": max_mm_images},
+                    }
+                    model_type = getattr(getattr(model, "config", None), "model_type", "")
+                    is_qwen_vl = (
+                        model_type in {"qwen2_vl", "qwen2_5_vl"}
+                        or "Qwen2-VL" in model_id
+                        or "Qwen2.5-VL" in model_id
                     )
+                    if self.vllm_use_mm_processor_kwargs and is_qwen_vl:
+                        llm_kwargs["mm_processor_kwargs"] = {
+                            "max_pixels": max_pixels,
+                            "min_pixels": min_pixels,
+                        }
+
+                    # Try old API (`device`) first, then fallback to newer (`device_config`).
+                    llm_kwargs["device"] = vllm_device
+                    try:
+                        self.llm = LLM(**llm_kwargs)
+                    except TypeError as exc:
+                        if "device" not in str(exc):
+                            raise
+                        llm_kwargs.pop("device", None)
+                        llm_kwargs["device_config"] = vllm_device
+                        try:
+                            self.llm = LLM(**llm_kwargs)
+                        except TypeError as exc2:
+                            if "device_config" not in str(exc2):
+                                raise
+                            llm_kwargs.pop("device_config", None)
+                            self.llm = LLM(**llm_kwargs)
                 self.sampling_params = SamplingParams(
                     temperature=args.temperature,
                     max_tokens=self.max_completion_length,
@@ -488,27 +754,28 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
         image_grid_thw,
         logits_to_keep,
     ):
-        pixel_values = pixel_values.to(model.device)
-        image_grid_thw = image_grid_thw.to(device=model.device)
-        logits = model(
-            input_ids,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values,
-            image_grid_thw=image_grid_thw,
-        ).logits  # (B, L, V)
-        logits = logits[
-            :, :-1, :
-        ]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
-        input_ids = input_ids[
-            :, -logits_to_keep:
-        ]  # (B, L-1), exclude the first input ID since we don't have logits for it
-        # Compute the log probabilities for the input tokens. Use a loop to reduce memory peak.
-        logits = logits[:, -logits_to_keep:]
+        B = input_ids.shape[0]
+        # All B completions share the same visual input (pixel_values was built with
+        # repeat_interleave(B): [p0,p0,..,p0, p1,p1,..,p1, ...]).
+        # Recover the original single-copy patches by striding with step B.
+        pv_single = pixel_values[::B].to(model.device)
+        thw_single = image_grid_thw[::B].to(device=model.device)
+
         per_token_logps = []
-        for logits_row, input_ids_row in zip(logits, input_ids):
-            log_probs = logits_row.log_softmax(dim=-1)
+        for i in range(B):
+            logits_i = model(
+                input_ids[i : i + 1],
+                attention_mask=attention_mask[i : i + 1],
+                pixel_values=pv_single,
+                image_grid_thw=thw_single,
+                use_cache=False,
+            ).logits  # (1, L, V)
+            logits_i = logits_i[:, :-1, :]
+            ids_i = input_ids[i : i + 1, -logits_to_keep:]
+            logits_i = logits_i[:, -logits_to_keep:, :]
+            log_probs = logits_i[0].log_softmax(dim=-1)
             token_log_prob = torch.gather(
-                log_probs, dim=1, index=input_ids_row.unsqueeze(1)
+                log_probs, dim=1, index=ids_i[0].unsqueeze(1)
             ).squeeze(1)
             per_token_logps.append(token_log_prob)
         return torch.stack(per_token_logps)
@@ -584,7 +851,23 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                     llm_model = (
                         self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                     )
-                    llm_model.load_weights(state_dict.items())
+                    # PEFT state_dict has base_layer/lora_A/lora_B; vLLM needs merged plain keys.
+                    if any(".base_layer." in k for k in state_dict):
+                        lora_alpha = _get_lora_alpha_from_model(unwrapped_model)
+                        remapped_items = _peft_state_dict_to_merged_state_dict(
+                            state_dict, lora_alpha_override=lora_alpha
+                        )
+                    else:
+                        remapped_items = []
+                        for key, value in state_dict.items():
+                            if key.startswith("base_model.model."):
+                                key = key[len("base_model.model.") :]
+                            elif key.startswith("base_model."):
+                                key = key[len("base_model.") :]
+                            remapped_items.append((key, value))
+                    llm_model.load_weights(
+                        _filter_vllm_incompatible_weight_keys(remapped_items)
+                    )
                 self._last_loaded_step = self.state.global_step
 
             # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
@@ -630,19 +913,20 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                 sampling_params.n = self.num_generations
                 # Single generate call with all prompts
                 outputs = []
-                for start in range(
-                    0, len(all_multimodal_inputs), self.vllm_prompt_batch_size
-                ):
-                    batch_inputs = all_multimodal_inputs[
-                        start : start + self.vllm_prompt_batch_size
-                    ]
-                    outputs.extend(
-                        self.llm.generate(
-                            batch_inputs,
-                            sampling_params=sampling_params,
-                            use_tqdm=False,
+                with _temporary_cuda_device(self._vllm_device or "auto"):
+                    for start in range(
+                        0, len(all_multimodal_inputs), self.vllm_prompt_batch_size
+                    ):
+                        batch_inputs = all_multimodal_inputs[
+                            start : start + self.vllm_prompt_batch_size
+                        ]
+                        outputs.extend(
+                            self.llm.generate(
+                                batch_inputs,
+                                sampling_params=sampling_params,
+                                use_tqdm=False,
+                            )
                         )
-                    )
                 # Flatten outputs: [prompt1_gen1, prompt1_gen2, ..., prompt2_gen1, prompt2_gen2, ...]
                 completion_ids = [out.token_ids for completion in outputs for out in completion.outputs]
             else:
@@ -764,8 +1048,11 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                     output_reward_func, dtype=torch.float32, device=device
                 )
         rewards_per_func = gather(rewards_per_func)
-        # Sum the rewards from all reward functions
-        rewards = rewards_per_func.sum(dim=1)
+        reward_weights = torch.tensor(
+            self.reward_weights, dtype=rewards_per_func.dtype, device=rewards_per_func.device
+        )
+        # Weighted sum of rewards from all reward functions
+        rewards = (rewards_per_func * reward_weights.unsqueeze(0)).sum(dim=1)
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
@@ -789,15 +1076,12 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
 
         # Log the metrics
         reward_per_func = rewards_per_func.mean(0)
-        for i, reward_func in enumerate(self.reward_funcs):
-            if isinstance(
-                reward_func, nn.Module
-            ):  # Module instead of PretrainedModel for compat with compiled models
-                reward_func_name = reward_func.config._name_or_path.split("/")[-1]
-            else:
-                reward_func_name = reward_func.__name__
+        for i, reward_func_name in enumerate(self.reward_func_names):
             self._metrics[f"rewards/{reward_func_name}"].append(
                 reward_per_func[i].item()
+            )
+            self._metrics[f"rewards_weight/{reward_func_name}"].append(
+                float(self.reward_weights[i])
             )
 
         self._metrics["reward"].append(rewards.mean().item())
@@ -898,10 +1182,23 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                 state_dict = unwrapped_model._orig_mod.state_dict()
             else:
                 state_dict = unwrapped_model.state_dict()
+        lora_alpha = _get_lora_alpha_from_model(self.model)
+        if any(".base_layer." in k for k in state_dict):
+            remapped_items = _peft_state_dict_to_merged_state_dict(
+                state_dict, lora_alpha_override=lora_alpha
+            )
+        else:
+            remapped_items = []
+            for key, value in state_dict.items():
+                if key.startswith("base_model.model."):
+                    key = key[len("base_model.model.") :]
+                elif key.startswith("base_model."):
+                    key = key[len("base_model.") :]
+                remapped_items.append((key, value))
         llm_model = (
             self.llm.llm_engine.model_executor.driver_worker.model_runner.model
         )
-        llm_model.load_weights(state_dict.items())
+        llm_model.load_weights(_filter_vllm_incompatible_weight_keys(remapped_items))
         self._last_loaded_step = self.state.global_step
 
         sampling_params = copy.deepcopy(self.sampling_params)
@@ -945,19 +1242,20 @@ class Qwen2VLGRPOVLLMTrainerModified(Trainer):
                 for p, img in zip(prompts_text, images)
             ]
             outputs = []
-            for chunk_start in range(
-                0, len(all_multimodal_inputs), self.vllm_prompt_batch_size
-            ):
-                chunk_inputs = all_multimodal_inputs[
-                    chunk_start : chunk_start + self.vllm_prompt_batch_size
-                ]
-                outputs.extend(
-                    self.llm.generate(
-                        chunk_inputs,
-                        sampling_params=sampling_params,
-                        use_tqdm=False,
+            with _temporary_cuda_device(self._vllm_device or "auto"):
+                for chunk_start in range(
+                    0, len(all_multimodal_inputs), self.vllm_prompt_batch_size
+                ):
+                    chunk_inputs = all_multimodal_inputs[
+                        chunk_start : chunk_start + self.vllm_prompt_batch_size
+                    ]
+                    outputs.extend(
+                        self.llm.generate(
+                            chunk_inputs,
+                            sampling_params=sampling_params,
+                            use_tqdm=False,
+                        )
                     )
-                )
             completion_ids = [out.token_ids for completion in outputs for out in completion.outputs]
             completion_texts = self.processing_class.batch_decode(
                 completion_ids, skip_special_tokens=True
