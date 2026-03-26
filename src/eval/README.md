@@ -7,8 +7,8 @@
 
 - Train Set: Video-R1
 - Test Set 1: Urban Video Bench
-- Test Set 2: 사용자 추가 벤치마크 템플릿
-- Test Set 3: 사용자 추가 벤치마크 템플릿
+- Test Set 2: VideoMMMU
+- Test Set 3: MMVU (multiple-choice only)
 
 핵심 원칙은 하나다.
 
@@ -41,18 +41,14 @@
   - HF에서 메타데이터를 export하고, mp4를 다운로드하고, 프레임을 추출한다.
   - 중간 산출물 `processed/test.jsonl`을 만든 뒤, 마지막에 `data_to_grpo.py`를 호출해 `uvb_grpo_test.jsonl`을 생성한다.
 
-- `prepare_test_set2.py`
-  - 향후 추가할 평가 벤치마크용 래퍼다.
-  - 내부적으로 `prepare_generic_test_benchmark.py`를 호출한다.
+- `prepare_videommmu.py`
+  - VideoMMMU를 평가용 벤치마크로 준비한다.
+  - Hugging Face metadata를 읽고, 각 row의 `link_selected` URL에서 비디오를 내려받고, 프레임을 추출한 뒤 최종 `videommmu_grpo_test.jsonl`을 만든다.
+  - VideoMMMU는 gated dataset일 수 있으므로 `HF_TOKEN` 또는 `huggingface-cli login`이 필요할 수 있다.
 
-- `prepare_test_set3.py`
-  - 향후 추가할 평가 벤치마크용 래퍼다.
-  - 내부적으로 `prepare_generic_test_benchmark.py`를 호출한다.
-
-- `prepare_generic_test_benchmark.py`
-  - 임의의 test benchmark를 공통 형식으로 전처리하는 일반 템플릿이다.
-  - `data/<benchmark>/raw/test.jsonl`, `data/<benchmark>/videos` 구조를 가정한다.
-
+- `prepare_mmvu.py`
+  - MMVU validation split 중 `multiple-choice` 질문만 평가용 벤치마크로 준비한다.
+  - Hugging Face metadata를 읽고, row의 `video`/`video_path`에 해당하는 HF 내부 비디오 파일을 다운로드하고, 프레임을 추출한 뒤 최종 `mmvu_grpo_test.jsonl`을 만든다.
 
 ### 2. 공통 변환기
 
@@ -156,26 +152,60 @@ Urban Video Bench 원본
 - 전체를 하나의 test benchmark로 취급한다.
 
 
-### C. Test Set 2 / Test Set 3
+### C. VideoMMMU Test Set 2
 
 흐름:
 
 ```text
-임의의 benchmark 원본
+VideoMMMU metadata
+-> selected config 로드
+-> link_selected URL 비디오 다운로드
 -> processed/test.jsonl
 -> processed/frames/test/...
--> grpo/<benchmark>_grpo_test.jsonl
+-> grpo/videommmu_grpo_test.jsonl
 ```
 
-기본 기대 폴더 구조:
+기본 출력 구조:
 
 ```text
-data/test_set2/raw/test.jsonl
-data/test_set2/videos/...
-
-data/test_set3/raw/test.jsonl
-data/test_set3/videos/...
+data/video_mmmu/raw/test.jsonl
+data/video_mmmu/raw/videos/...
+data/video_mmmu/processed/test.jsonl
+data/video_mmmu/grpo/videommmu_grpo_test.jsonl
 ```
+
+주의:
+
+- VideoMMMU는 URL 기반 비디오를 내려받기 위해 `yt-dlp`가 필요하다.
+- 또한 Hugging Face 접근 권한이 필요한 gated dataset일 수 있다.
+
+
+### D. MMVU Test Set 3
+
+흐름:
+
+```text
+MMVU validation metadata
+-> multiple-choice row만 필터링
+-> HF dataset 내부 video 파일 다운로드
+-> processed/test.jsonl
+-> processed/frames/test/...
+-> grpo/mmvu_grpo_test.jsonl
+```
+
+기본 출력 구조:
+
+```text
+data/mmvu/raw/test.jsonl
+data/mmvu/raw/videos/...
+data/mmvu/processed/test.jsonl
+data/mmvu/grpo/mmvu_grpo_test.jsonl
+```
+
+주의:
+
+- MMVU는 `multiple-choice` 질문만 사용한다.
+- 비디오는 Hugging Face dataset 내부 파일을 직접 받으므로 유튜브 다운로드가 필요 없다.
 
 
 ## `data_to_grpo.py`가 만드는 최종 형식
@@ -213,17 +243,15 @@ python src/eval/prepare_video_r1_grpo.py \
   --dataset-dir "data/video_r1/raw" \
   --processed-dir "data/video_r1/processed" \
   --output-dir "data/video_r1/grpo" \
-  --subsets "PerceptionTest" \
-  --num-frames 16
+  --subsets "LLaVA-Video-178K,NeXT-QA,PerceptionTest,CLEVRER,STAR" \
+  --num-frames 16 \
   --sample-ratio 1 \
   --download-mode subset-directories
-
 ```
-여기서, 일부 샘플만 받으려고 할 때는 subsets 항목에 추가하면 된다.
-위 상태는 가장 용량이 큰 LLaVA 데이터셋을 제외한 상태이다. 
-다 쓰려면 그냥 지우면 된다.
-현재는 프레임 개수가 16개로 지정되어 있으나, 32개로 설정할 수 있다.
-  --subsets "NeXT-QA,PerceptionTest,CLEVRER,STAR" \
+
+여기서 특정 subset만 받으려면 `--subsets`를 줄이면 된다.
+예를 들어 LLaVA를 빼고 싶으면 `--subsets "NeXT-QA,PerceptionTest,CLEVRER,STAR"`처럼 지정하면 된다.
+프레임 개수는 `--num-frames 32`처럼 바꿀 수 있다.
 
 
 ### 2. Video-R1 30% 샘플 train 준비
@@ -248,6 +276,26 @@ python src/eval/prepare_uvb_pipeline.py \
   --video-dir "data/urban_video_bench" \
   --output-dir "data/urban_video_bench/processed" \
   --grpo-output-dir "data/urban_video_bench/grpo"
+```
+
+
+### 4. VideoMMMU test set 준비
+
+```bash
+python src/eval/prepare_videommmu.py \
+  --dataset-dir "data/video_mmmu/raw" \
+  --processed-dir "data/video_mmmu/processed" \
+  --grpo-output-dir "data/video_mmmu/grpo"
+```
+
+
+### 5. MMVU test set 준비
+
+```bash
+python src/eval/prepare_mmvu.py \
+  --dataset-dir "data/mmvu/raw" \
+  --processed-dir "data/mmvu/processed" \
+  --grpo-output-dir "data/mmvu/grpo"
 ```
 
 

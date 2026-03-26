@@ -236,7 +236,7 @@ def main() -> None:
 
     if not input_path.exists():
         raise FileNotFoundError(
-            f"Input JSONL not found: {input_path}. Run src/scripts/prepare_uvb_dataset.sh first."
+            f"Input JSONL not found: {input_path}. Prepare the UVB metadata/input JSONL first, then rerun."
         )
 
     print("=" * 70)

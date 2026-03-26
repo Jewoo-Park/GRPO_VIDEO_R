@@ -19,7 +19,10 @@ fi
 echo "[setup] Using python: $(which python)"
 python -m pip install --upgrade pip setuptools wheel
 
-if [[ "${INSTALL_TORCH_CU124,,}" == "true" ]]; then
+INSTALL_TORCH_CU124_LC="$(printf '%s' "${INSTALL_TORCH_CU124}" | tr '[:upper:]' '[:lower:]')"
+INSTALL_FLASH_ATTN_LC="$(printf '%s' "${INSTALL_FLASH_ATTN}" | tr '[:upper:]' '[:lower:]')"
+
+if [[ "${INSTALL_TORCH_CU124_LC}" == "true" ]]; then
   echo "[setup] Installing torch/cu124 pinned stack"
   python -m pip install \
     torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 \
@@ -40,6 +43,7 @@ python -m pip install \
   "accelerate" \
   "deepspeed==0.15.4" \
   "datasets" \
+  "yt-dlp" \
   "vllm==0.7.2" \
   "wandb>=0.19.1" \
   "tensorboardx" \
@@ -49,7 +53,7 @@ python -m pip install \
 # Keep transformers at a known-good revision used by this repo.
 python -m pip install "git+https://github.com/huggingface/transformers.git@336dc69d63d56f232a183a3e7f52790429b871ef"
 
-if [[ "${INSTALL_FLASH_ATTN,,}" == "true" ]]; then
+if [[ "${INSTALL_FLASH_ATTN_LC}" == "true" ]]; then
   # flash-attn build can fail on unsupported environments (e.g., non-CUDA/macOS).
   # Continue setup and let runtime fallback to xformers/SDPA if unavailable.
   python -m pip install "flash-attn==2.6.3" --no-build-isolation || true

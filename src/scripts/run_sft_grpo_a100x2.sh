@@ -20,6 +20,10 @@ GRPO_TRAIN_NUM_GPUS="${GRPO_TRAIN_NUM_GPUS:-1}"
 GRPO_CUDA_VISIBLE_DEVICES="${GRPO_CUDA_VISIBLE_DEVICES:-0,1}"
 GRPO_QWEN_PATH="${GRPO_QWEN_PATH:-}"
 
+DO_SFT_LC="$(printf '%s' "${DO_SFT}" | tr '[:upper:]' '[:lower:]')"
+DO_MERGE_LC="$(printf '%s' "${DO_MERGE}" | tr '[:upper:]' '[:lower:]')"
+DO_GRPO_LC="$(printf '%s' "${DO_GRPO}" | tr '[:upper:]' '[:lower:]')"
+
 resolve_sft_merged_model() {
   local candidates=(
     "${REPO_ROOT}/sft/outputs/qwen25vl3b_lora_merged_from_sft40"
@@ -37,7 +41,7 @@ resolve_sft_merged_model() {
   return 1
 }
 
-if [[ "${DO_SFT,,}" == "true" ]]; then
+if [[ "${DO_SFT_LC}" == "true" ]]; then
   echo "[PIPELINE] Stage 1/3: SFT training"
   (
     cd sft
@@ -49,7 +53,7 @@ if [[ "${DO_SFT,,}" == "true" ]]; then
   )
 fi
 
-if [[ "${DO_MERGE,,}" == "true" ]]; then
+if [[ "${DO_MERGE_LC}" == "true" ]]; then
   echo "[PIPELINE] Stage 2/3: Merge SFT LoRA"
   (
     cd sft
@@ -57,7 +61,7 @@ if [[ "${DO_MERGE,,}" == "true" ]]; then
   )
 fi
 
-if [[ "${DO_GRPO,,}" == "true" ]]; then
+if [[ "${DO_GRPO_LC}" == "true" ]]; then
   echo "[PIPELINE] Stage 3/3: GRPO training"
 
   if [[ -n "${GRPO_QWEN_PATH}" ]]; then

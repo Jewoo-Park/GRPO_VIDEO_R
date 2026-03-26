@@ -8,6 +8,8 @@
 
 - Train Set: Video-R1
 - Test Set 1: Urban Video Bench
+- Test Set 2: VideoMMMU
+- Test Set 3: MMVU (multiple-choice only)
 - 최종 데이터 형식: 공통 GRPO JSONL
 - 평가 벤치마크는 UVB를 유지
 
@@ -33,6 +35,14 @@ GRPO_Video/
 │   └── urban_video_bench/      # Test Set 1 (UVB)
 │       ├── processed/          # 중간 산출물: test.jsonl, frames/test/...
 │       └── grpo/               # 최종 평가 입력: uvb_grpo_test.jsonl
+│   ├── video_mmmu/             # Test Set 2 (VideoMMMU)
+│   │   ├── raw/                # 메타데이터 및 URL 다운로드 비디오
+│   │   ├── processed/          # 중간 산출물: test.jsonl, frames/test/...
+│   │   └── grpo/               # 최종 평가 입력: videommmu_grpo_test.jsonl
+│   └── mmvu/                   # Test Set 3 (MMVU mc only)
+│       ├── raw/                # 메타데이터 및 HF 내부 비디오 파일
+│       ├── processed/          # 중간 산출물: test.jsonl, frames/test/...
+│       └── grpo/               # 최종 평가 입력: mmvu_grpo_test.jsonl
 │
 ├── sft/                        # SFT 파이프라인
 │   ├── configs/
@@ -46,9 +56,8 @@ GRPO_Video/
 │   │   ├── README.md
 │   │   ├── prepare_video_r1_grpo.py
 │   │   ├── prepare_uvb_pipeline.py
-│   │   ├── prepare_generic_test_benchmark.py
-│   │   ├── prepare_test_set2.py
-│   │   ├── prepare_test_set3.py
+│   │   ├── prepare_videommmu.py
+│   │   ├── prepare_mmvu.py
 │   │   ├── data_to_grpo.py
 │   │   ├── grpo_data_utils.py
 │   │   ├── video_dataset_prep_utils.py
@@ -65,7 +74,8 @@ GRPO_Video/
 │   └── scripts/
 │       ├── prepare_video_r1_grpo_data.sh
 │       ├── prepare_uvb_grpo_data.sh
-│       ├── prepare_uvb_dataset.sh
+│       ├── prepare_videommmu_grpo_data.sh
+│       ├── prepare_mmvu_grpo_data.sh
 │       ├── prepare_uvb_full_split_local_videos.sh
 │       ├── run_grpo_uvb_answer_only.sh
 │       ├── run_grpo_uvb_answer_only_lora.sh
@@ -98,6 +108,22 @@ Urban Video Bench 원본
 -> data/urban_video_bench/processed/frames/test/...
 -> data_to_grpo.py
 -> data/urban_video_bench/grpo/uvb_grpo_test.jsonl
+-> 평가
+
+VideoMMMU 원본
+-> prepare_videommmu.py
+-> data/video_mmmu/processed/test.jsonl
+-> data/video_mmmu/processed/frames/test/...
+-> data_to_grpo.py
+-> data/video_mmmu/grpo/videommmu_grpo_test.jsonl
+-> 평가
+
+MMVU 원본
+-> prepare_mmvu.py
+-> data/mmvu/processed/test.jsonl
+-> data/mmvu/processed/frames/test/...
+-> data_to_grpo.py
+-> data/mmvu/grpo/mmvu_grpo_test.jsonl
 -> 평가
 ```
 
@@ -314,35 +340,54 @@ bash src/scripts/prepare_uvb_grpo_data.sh
 
 ---
 
-## 6. Test Set 2 / Test Set 3 확장 구조
+## 6. Test Set 2 / Test Set 3
 
-향후 다른 평가 벤치마크를 추가할 수 있도록 템플릿이 준비되어 있다.
+### 6.1 Test Set 2: VideoMMMU
 
-관련 파일:
+담당 파일:
 
-- `prepare_generic_test_benchmark.py`
-- `prepare_test_set2.py`
-- `prepare_test_set3.py`
-
-기본 기대 구조:
-
-```text
-data/test_set2/raw/test.jsonl
-data/test_set2/videos/...
-data/test_set3/raw/test.jsonl
-data/test_set3/videos/...
-```
+- `prepare_videommmu.py`
 
 흐름:
 
 ```text
-raw/test.jsonl
+HF VideoMMMU metadata
+-> 선택 config 로드
+-> link_selected URL 비디오 다운로드
 -> processed/test.jsonl
 -> processed/frames/test/...
--> grpo/<name>_grpo_test.jsonl
+-> grpo/videommmu_grpo_test.jsonl
 ```
 
-즉 test2/test3도 결국 UVB와 같은 구조를 따른다.
+주의:
+
+- VideoMMMU는 gated dataset일 수 있다.
+- Hugging Face 인증이 필요할 수 있다.
+- 비디오 다운로드에는 `yt-dlp`가 필요하다.
+
+
+### 6.2 Test Set 3: MMVU (multiple-choice only)
+
+담당 파일:
+
+- `prepare_mmvu.py`
+
+흐름:
+
+```text
+HF MMVU validation metadata
+-> multiple-choice row만 필터링
+-> HF 내부 video 파일 다운로드
+-> processed/test.jsonl
+-> processed/frames/test/...
+-> grpo/mmvu_grpo_test.jsonl
+```
+
+주의:
+
+- MMVU는 `multiple-choice` 질문만 사용한다.
+- 비디오는 Hugging Face dataset 내부 파일을 직접 받으므로 유튜브 다운로드가 필요 없다.
+
 
 ---
 

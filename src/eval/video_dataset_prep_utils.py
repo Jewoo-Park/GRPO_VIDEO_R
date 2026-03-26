@@ -1,7 +1,11 @@
 import json
 import os
+import hashlib
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 import av
 import numpy as np
@@ -180,3 +184,80 @@ def extract_frames_for_rows(
 
 def hf_token_from_env() -> Optional[str]:
     return os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+
+
+VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".avi")
+
+
+def stable_name_from_url(url: str, prefix: str = "video") -> str:
+    parsed = urlparse(url)
+    tail = Path(parsed.path).stem or parsed.netloc or prefix
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+    keep: list[str] = []
+    for ch in tail:
+        if ch.isalnum() or ch in ("-", "_"):
+            keep.append(ch)
+        else:
+            keep.append("_")
+    safe_tail = "".join(keep).strip("_") or prefix
+    return f"{safe_tail}_{digest}"
+
+
+def find_existing_video_file(output_stem: Path) -> Optional[Path]:
+    for ext in VIDEO_EXTENSIONS:
+        candidate = output_stem.with_suffix(ext)
+        if candidate.exists():
+            return candidate.resolve()
+
+    for candidate in sorted(output_stem.parent.glob(f"{output_stem.name}.*")):
+        if candidate.is_file() and candidate.suffix.lower() in VIDEO_EXTENSIONS:
+            return candidate.resolve()
+    return None
+
+
+def download_video_url(url: str, output_stem: Path, quiet: bool = False) -> Optional[Path]:
+    output_stem.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = find_existing_video_file(output_stem)
+    if existing is not None:
+        return existing
+
+    outtmpl = str(output_stem) + ".%(ext)s"
+
+    try:
+        import yt_dlp  # type: ignore
+
+        opts = {
+            "outtmpl": outtmpl,
+            "format": "mp4/bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
+            "quiet": quiet,
+            "no_warnings": quiet,
+            "noplaylist": True,
+            "restrictfilenames": False,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except ImportError:
+        yt_dlp_bin = shutil.which("yt-dlp")
+        if yt_dlp_bin is None:
+            raise RuntimeError(
+                "yt-dlp is required to prepare URL-based video benchmarks. "
+                "Install it with `python -m pip install yt-dlp` or provide the `yt-dlp` executable."
+            )
+        cmd = [
+            yt_dlp_bin,
+            "-f",
+            "mp4/bestvideo+bestaudio/best",
+            "--merge-output-format",
+            "mp4",
+            "--no-playlist",
+            "-o",
+            outtmpl,
+            url,
+        ]
+        if quiet:
+            cmd.insert(1, "-q")
+        subprocess.run(cmd, check=True)
+
+    return find_existing_video_file(output_stem)
