@@ -60,19 +60,15 @@ ANSWER_FORMAT_WEIGHT="0.1" \
 
 ---
 
-## SFT부터 전체 파이프라인 실행
+## SFT 이후 GRPO 실행
 
-SFT 훈련 → LoRA merge → GRPO 훈련을 한 번에 실행:
+현재 운영 기준에서는 SFT와 merge를 먼저 끝낸 뒤, GRPO는 별도 스크립트로 실행한다.
+
+대표 진입점:
 
 ```bash
 cd /path/to/GRPO_Video
-bash src/scripts/run_sft_grpo_a100x2.sh
-```
-
-merged 모델이 이미 있고 GRPO만 다시 돌리려면:
-
-```bash
-DO_SFT=false DO_MERGE=false bash src/scripts/run_sft_grpo_a100x2.sh
+bash src/scripts/run_grpo_uvb_answer_only_lora.sh
 ```
 
 ---

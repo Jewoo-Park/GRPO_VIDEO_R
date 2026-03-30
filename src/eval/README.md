@@ -129,8 +129,9 @@ Video-R1 원본
 
 ```text
 Urban Video Bench 원본
--> 메타데이터 export
+-> HF dataset split 로드
 -> mp4 다운로드
+-> data/urban_video_bench/raw/test.jsonl
 -> 프레임 추출
 -> data/urban_video_bench/processed/test.jsonl
 -> data/urban_video_bench/processed/frames/test/...
@@ -139,6 +140,7 @@ Urban Video Bench 원본
 
 중간 산출물:
 
+- `data/urban_video_bench/raw/test.jsonl`
 - `data/urban_video_bench/processed/test.jsonl`
 - `data/urban_video_bench/processed/frames/test/...`
 
@@ -232,6 +234,11 @@ data/mmvu/grpo/mmvu_grpo_test.jsonl
   - 정답
   - 항상 `<ANSWER>...</ANSWER>` 형식으로 정규화됨
 
+추가 참고:
+
+- `data_to_grpo.py`를 별도 실행할 때는 현재 구조인 `processed/train.jsonl`, `processed/test.jsonl`를 먼저 찾는다.
+- 이 파일들이 없을 때만 예전 구조인 `train_80.jsonl`, `test_20.jsonl`를 fallback으로 사용한다.
+
 
 ## 자주 쓰는 명령어
 
@@ -273,7 +280,7 @@ python src/eval/prepare_video_r1_grpo.py \
 ```bash
 python src/eval/prepare_uvb_pipeline.py \
   --dataset-id "EmbodiedCity/UrbanVideo-Bench" \
-  --video-dir "data/urban_video_bench" \
+  --video-dir "data/urban_video_bench/raw" \
   --output-dir "data/urban_video_bench/processed" \
   --grpo-output-dir "data/urban_video_bench/grpo"
 ```
@@ -299,7 +306,15 @@ python src/eval/prepare_mmvu.py \
 ```
 
 
-### 4. 이미 만들어진 processed split을 수동 변환
+### 6. Train + 3개 test를 한 번에 준비
+
+```bash
+export HF_TOKEN="approved_hf_token"
+bash src/scripts/prepare_all_grpo_data.sh
+```
+
+
+### 7. 이미 만들어진 processed split을 수동 변환
 
 단일 split:
 
@@ -323,7 +338,7 @@ python src/eval/data_to_grpo.py \
 ```
 
 
-### 5. UVB 오프라인 평가
+### 8. UVB 오프라인 평가
 
 ```bash
 python src/eval/uvb_eval_only.py \
@@ -377,21 +392,32 @@ data/video_r1/grpo/video_r1_grpo_train.jsonl
 ### Urban Video Bench
 
 ```text
-data/urban_video_bench/urban_video_bench_all.jsonl
+data/urban_video_bench/raw/test.jsonl
+data/urban_video_bench/raw/videos/...
 data/urban_video_bench/processed/test.jsonl
 data/urban_video_bench/processed/frames/test/...
 data/urban_video_bench/grpo/uvb_grpo_test.jsonl
 ```
 
 
-### Generic Test Benchmark
+### VideoMMMU
 
 ```text
-data/test_set2/raw/test.jsonl
-data/test_set2/videos/...
-data/test_set2/processed/test.jsonl
-data/test_set2/processed/frames/test/...
-data/test_set2/grpo/test_set2_grpo_test.jsonl
+data/video_mmmu/raw/test.jsonl
+data/video_mmmu/raw/videos/...
+data/video_mmmu/processed/test.jsonl
+data/video_mmmu/processed/frames/test/...
+data/video_mmmu/grpo/videommmu_grpo_test.jsonl
+```
+
+
+### MMVU
+
+```text
+data/mmvu/raw/test.jsonl
+data/mmvu/processed/test.jsonl
+data/mmvu/processed/frames/test/...
+data/mmvu/grpo/mmvu_grpo_test.jsonl
 ```
 
 
@@ -401,10 +427,12 @@ data/test_set2/grpo/test_set2_grpo_test.jsonl
 
 - 데이터셋별 준비는 각각의 `prepare_*.py`가 담당한다.
 - 최종 학습/평가 입력 형식은 `data_to_grpo.py`가 일괄 통일한다.
-- Train은 Video-R1, Test 1은 UVB, Test 2/3는 확장 가능한 템플릿 구조다.
+- Train은 Video-R1, Test는 UVB / VideoMMMU / MMVU 세 벤치마크를 사용한다.
 - `processed/`는 중간 산출물, `grpo/`는 모델이 직접 읽는 최종 산출물이다.
 
-가장 중요한 최종 입력 파일은 아래 두 개다.
+가장 중요한 최종 입력 파일은 아래 네 개다.
 
 - Train: `data/video_r1/grpo/video_r1_grpo_train.jsonl`
-- Eval: `data/urban_video_bench/grpo/uvb_grpo_test.jsonl`
+- Test 1 (UVB): `data/urban_video_bench/grpo/uvb_grpo_test.jsonl`
+- Test 2 (VideoMMMU): `data/video_mmmu/grpo/videommmu_grpo_test.jsonl`
+- Test 3 (MMVU): `data/mmvu/grpo/mmvu_grpo_test.jsonl`

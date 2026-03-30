@@ -214,6 +214,7 @@ check_path() {
 
 check_path "src/r1-v/src/open_r1/grpo_uvb.py"
 check_path "src/scripts/run_grpo_uvb_answer_only.sh"
+check_path "src/scripts/prepare_all_grpo_data.sh"
 check_path "src/scripts/prepare_uvb_full_split_local_videos.sh"
 check_path "src/scripts/prepare_uvb_grpo_data.sh"
 check_path "src/scripts/prepare_videommmu_grpo_data.sh"
@@ -250,9 +251,8 @@ if [ "$ALL_CHECKS_PASSED" = true ]; then
     echo "You're ready to start training."
     echo ""
     echo "Next steps:"
-    echo "  1. Prepare Video-R1 train data: bash src/scripts/prepare_video_r1_grpo_data.sh"
-    echo "  2. Prepare UVB evaluation data: bash src/scripts/prepare_uvb_grpo_data.sh"
-    echo "  3. Start training/eval: bash src/scripts/run_grpo_uvb_answer_only.sh"
+    echo "  1. Prepare all GRPO datasets: bash src/scripts/prepare_all_grpo_data.sh"
+    echo "  2. Start training/eval: bash src/scripts/run_grpo_uvb_answer_only.sh"
 else
     echo -e "${RED}✗ Some checks failed${NC}"
     echo "Please fix the issues above before training."

@@ -33,6 +33,7 @@ GRPO_Video/
 │   │   └── grpo/               # 최종 학습 입력: video_r1_grpo_train.jsonl
 │   │
 │   └── urban_video_bench/      # Test Set 1 (UVB)
+│       ├── raw/                # 원본 metadata dump 및 다운로드한 videos/
 │       ├── processed/          # 중간 산출물: test.jsonl, frames/test/...
 │       └── grpo/               # 최종 평가 입력: uvb_grpo_test.jsonl
 │   ├── video_mmmu/             # Test Set 2 (VideoMMMU)
@@ -76,10 +77,10 @@ GRPO_Video/
 │       ├── prepare_uvb_grpo_data.sh
 │       ├── prepare_videommmu_grpo_data.sh
 │       ├── prepare_mmvu_grpo_data.sh
+│       ├── prepare_all_grpo_data.sh
 │       ├── prepare_uvb_full_split_local_videos.sh
 │       ├── run_grpo_uvb_answer_only.sh
 │       ├── run_grpo_uvb_answer_only_lora.sh
-│       ├── run_sft_grpo_a100x2.sh
 │       ├── check_environment.sh
 │       └── RUN_GRPO_UVB.md
 │
@@ -104,6 +105,7 @@ Video-R1 원본
 
 Urban Video Bench 원본
 -> prepare_uvb_pipeline.py
+-> data/urban_video_bench/raw/test.jsonl
 -> data/urban_video_bench/processed/test.jsonl
 -> data/urban_video_bench/processed/frames/test/...
 -> data_to_grpo.py
@@ -320,17 +322,17 @@ GRPO 학습 후 테스트/평가 벤치마크로 사용한다.
 
 `prepare_uvb_pipeline.py`가 하는 일:
 
-1. HF dataset split을 JSONL로 export
+1. HF dataset split을 로드하고 `data/urban_video_bench/raw/test.jsonl`로 dump
 2. mp4 다운로드
 3. 프레임 추출
-4. 중간 split JSONL과 프레임 디렉터리 생성
+4. 중간 `processed/test.jsonl`과 프레임 디렉터리 생성
 5. 필요 시 `data_to_grpo.py`로 최종 GRPO JSONL 생성
 
 ### 5.5 주의
 
 - 현재 학습 실행 경로에서 실제로 필요한 것은 `data/urban_video_bench/grpo/uvb_grpo_test.jsonl` 하나다.
 - 즉 운영 기준에서는 UVB를 평가용 benchmark로만 사용한다.
-- UVB 준비 스크립트 쪽에는 과거 sampling/split 로직의 흔적이 남아 있을 수 있지만, 학습 실행 관점에서는 이미 준비된 `uvb_grpo_test.jsonl`을 테스트 입력으로 사용하면 된다.
+- 현재 UVB도 다른 benchmark와 동일하게 `raw/processed/grpo` 구조를 따른다.
 
 예시 명령어:
 
@@ -405,6 +407,8 @@ HF MMVU validation metadata
 - `problem`을 공통 포맷으로 정규화
 - `solution`을 `<ANSWER>...</ANSWER>`로 정규화
 - `frames`를 JSONL 기준 상대 경로로 저장
+- 현재 기본 split 감지는 `processed/train.jsonl`, `processed/test.jsonl`를 우선 사용하고,
+  없을 때만 예전 구조 `train_80.jsonl`, `test_20.jsonl`를 fallback으로 사용
 
 중요 함수:
 

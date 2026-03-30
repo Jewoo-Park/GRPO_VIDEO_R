@@ -8,7 +8,7 @@ echo "================================================"
 
 python src/eval/prepare_uvb_pipeline.py \
   --dataset-id "EmbodiedCity/UrbanVideo-Bench" \
-  --video-dir "data/videos" \
+  --video-dir "data/urban_video_bench/raw" \
   --output-dir "data/urban_video_bench/processed" \
   --grpo-output-dir "data/urban_video_bench/grpo" \
   --num-frames 32 \
@@ -17,5 +17,5 @@ python src/eval/prepare_uvb_pipeline.py \
 
 echo "================================================"
 echo "Done"
-echo "Processed files: data/urban_video_bench/processed and data/urban_video_bench/grpo"
+echo "Processed files: data/urban_video_bench/raw, data/urban_video_bench/processed and data/urban_video_bench/grpo"
 echo "================================================"

@@ -136,10 +136,18 @@ def main() -> None:
             if args.test_input.strip():
                 split_configs.append(("test", Path(args.test_input), args.test_output_name))
         else:
-            split_configs = [
-                ("train", processed / "train_80.jsonl", args.train_output_name),
-                ("test", processed / "test_20.jsonl", args.test_output_name),
+            current_split_configs = [
+                ("train", processed / "train.jsonl", args.train_output_name),
+                ("test", processed / "test.jsonl", args.test_output_name),
             ]
+            existing_current = [(name, path, output_name) for name, path, output_name in current_split_configs if path.exists()]
+            if existing_current:
+                split_configs = existing_current
+            else:
+                split_configs = [
+                    ("train", processed / "train_80.jsonl", args.train_output_name),
+                    ("test", processed / "test_20.jsonl", args.test_output_name),
+                ]
         summary = convert_named_splits(
             split_configs=split_configs,
             output_dir=output,
