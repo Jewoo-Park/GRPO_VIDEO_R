@@ -19,6 +19,7 @@ import random
 import tarfile
 import zipfile
 from collections import Counter
+from itertools import islice
 from pathlib import Path
 
 from datasets import load_dataset
@@ -76,6 +77,94 @@ def download_sampled_video_files(dataset_id: str, local_dir: Path, manifest_name
     return {"requested_video_files": len(requested_paths)}
 
 
+def _batched(items: list[str], batch_size: int):
+    iterator = iter(items)
+    while True:
+        batch = list(islice(iterator, batch_size))
+        if not batch:
+            return
+        yield batch
+
+
+def download_sampled_image_files(
+    dataset_id: str,
+    local_dir: Path,
+    manifest_name: str,
+    sampled_rows: list[dict],
+    batch_size: int = 512,
+) -> dict[str, int]:
+    requested_paths = sorted(
+        {
+            normalize_repo_path(str(row.get("path") or ""))
+            for row in sampled_rows
+            if str(row.get("media_type") or "") == "image" and str(row.get("path") or "").strip()
+        }
+    )
+    if not requested_paths:
+        return {"requested_image_files": 0, "image_download_batches": 0}
+
+    batch_count = 0
+    token = hf_token_from_env()
+    for batch in _batched(requested_paths, batch_size):
+        download_dataset_files(
+            dataset_id=dataset_id,
+            local_dir=local_dir,
+            allow_patterns=[manifest_name, *batch],
+            token=token,
+        )
+        batch_count += 1
+
+    return {
+        "requested_image_files": len(requested_paths),
+        "image_download_batches": batch_count,
+    }
+
+
+def _image_download_root(path_text: str) -> str | None:
+    parts = [part for part in Path(normalize_repo_path(path_text)).parts if part not in ("", ".", "..")]
+    if not parts:
+        return None
+    return parts[0]
+
+
+def download_sampled_image_archives(
+    dataset_id: str,
+    local_dir: Path,
+    manifest_name: str,
+    sampled_rows: list[dict],
+    batch_size: int = 16,
+) -> dict[str, int]:
+    requested_roots = sorted(
+        {
+            root
+            for row in sampled_rows
+            if str(row.get("media_type") or "") == "image"
+            for root in [_image_download_root(str(row.get("path") or ""))]
+            if root
+        }
+    )
+    if not requested_roots:
+        return {"requested_image_roots": 0, "image_download_batches": 0}
+
+    allow_patterns = [f"{root}/*.zip" for root in requested_roots]
+
+    batch_count = 0
+    token = hf_token_from_env()
+    for batch in _batched(allow_patterns, batch_size):
+        download_dataset_files(
+            dataset_id=dataset_id,
+            local_dir=local_dir,
+            allow_patterns=[manifest_name, *batch],
+            token=token,
+        )
+        batch_count += 1
+
+    return {
+        "requested_image_roots": len(requested_roots),
+        "image_download_batches": batch_count,
+    }
+
+
 def extract_archives(dataset_root: Path) -> dict[str, int]:
     stats = {"zip_archives": 0, "tar_archives": 0, "archives_extracted": 0}
     for archive in dataset_root.rglob("*"):
@@ -116,6 +205,20 @@ def match_subset(row: dict, subsets: list[str]) -> str | None:
     return None
 
 
+def derive_image_subset(row: dict) -> str:
+    data_source = str(row.get("data_source") or "").strip()
+    if data_source:
+        return data_source.split("/")[0]
+
+    path_text = normalize_repo_path(str(row.get("path") or ""))
+    parts = [part for part in Path(path_text).parts if part not in ("", ".", "..")]
+    if len(parts) >= 2 and parts[0] in {"Knowledge", "Spatial", "Temporal", "Math", "Chart", "OCR"}:
+        return parts[1]
+    if parts:
+        return parts[0]
+    return "unknown_image"
+
+
 def is_multiple_choice(row: dict) -> bool:
     options = row.get("options")
     if isinstance(options, list) and len(options) >= 2:
@@ -124,28 +227,32 @@ def is_multiple_choice(row: dict) -> bool:
     return "multiple" in problem_type and "choice" in problem_type
 
 
-def sample_rows_by_subset(rows: list[dict], sample_ratio: float, seed: int) -> tuple[list[dict], dict[str, dict[str, int]]]:
-    if not 0 < sample_ratio <= 1.0:
-        raise ValueError(f"sample_ratio must be in (0, 1], got {sample_ratio}")
-    if sample_ratio >= 1.0:
-        counts = Counter(str(row.get("source_subset") or "unknown") for row in rows)
-        return rows, {subset: {"total": total, "sampled": total} for subset, total in counts.items()}
+def sample_rows_by_media_and_subset(
+    rows: list[dict],
+    sample_ratios: dict[str, float],
+    seed: int,
+) -> tuple[list[dict], dict[str, dict[str, dict[str, int]]]]:
+    for media_type, ratio in sample_ratios.items():
+        if not 0 < ratio <= 1.0:
+            raise ValueError(f"{media_type} sample ratio must be in (0, 1], got {ratio}")
 
     rng = random.Random(seed)
-    grouped: dict[str, list[dict]] = {}
+    grouped: dict[tuple[str, str], list[dict]] = {}
     for row in rows:
+        media_type = str(row.get("media_type") or "unknown")
         subset = str(row.get("source_subset") or "unknown")
-        grouped.setdefault(subset, []).append(row)
+        grouped.setdefault((media_type, subset), []).append(row)
 
     sampled_rows: list[dict] = []
-    stats: dict[str, dict[str, int]] = {}
-    for subset in sorted(grouped.keys()):
-        subset_rows = grouped[subset]
+    stats: dict[str, dict[str, dict[str, int]]] = {}
+    for (media_type, subset) in sorted(grouped.keys()):
+        subset_rows = grouped[(media_type, subset)]
         total = len(subset_rows)
-        sample_n = min(total, max(1, round(total * sample_ratio)))
-        sampled = rng.sample(subset_rows, sample_n)
+        ratio = sample_ratios.get(media_type, 1.0)
+        sample_n = total if ratio >= 1.0 else min(total, max(1, round(total * ratio)))
+        sampled = subset_rows if sample_n == total else rng.sample(subset_rows, sample_n)
         sampled_rows.extend(sampled)
-        stats[subset] = {"total": total, "sampled": sample_n}
+        stats.setdefault(media_type, {})[subset] = {"total": total, "sampled": sample_n}
     rng.shuffle(sampled_rows)
     return sampled_rows, stats
 
@@ -165,6 +272,9 @@ def main() -> None:
     parser.add_argument("--num-frames", type=int, default=16)
     parser.add_argument("--max-frame-size", type=int, default=768)
     parser.add_argument("--sample-ratio", type=float, default=1.0)
+    parser.add_argument("--video-sample-ratio", type=float, default=None)
+    parser.add_argument("--image-sample-ratio", type=float, default=None)
+    parser.add_argument("--include-images", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--subsets", type=str, default=",".join(DEFAULT_SUBSETS))
     parser.add_argument(
@@ -186,6 +296,16 @@ def main() -> None:
     selected_subsets = [subset.strip() for subset in args.subsets.split(",") if subset.strip()]
     if not selected_subsets:
         raise ValueError("At least one subset must be selected")
+    include_images = args.include_images or (args.image_sample_ratio is not None and args.image_sample_ratio > 0)
+    video_sample_ratio = args.video_sample_ratio if args.video_sample_ratio is not None else args.sample_ratio
+    image_sample_ratio = (
+        args.image_sample_ratio
+        if args.image_sample_ratio is not None
+        else (args.sample_ratio if include_images else 0.0)
+    )
+    sample_ratios = {"video": video_sample_ratio}
+    if include_images:
+        sample_ratios["image"] = image_sample_ratio
 
     download_manifest(
         dataset_id=args.dataset_id,
@@ -201,31 +321,48 @@ def main() -> None:
     dataset = load_dataset("json", data_files=str(manifest_path), split="train")
 
     per_subset_counts = Counter()
-    skipped_non_video_or_non_mc = 0
+    media_type_counts = Counter()
+    skipped_non_multiple_choice = 0
+    skipped_unsupported_data_type = 0
     filtered_rows: list[dict] = []
 
     for row in dataset:
-        subset = match_subset(row, selected_subsets)
-        if subset is None:
+        media_type = str(row.get("data_type") or "").lower()
+        if media_type == "video":
+            subset = match_subset(row, selected_subsets)
+            if subset is None:
+                continue
+        elif media_type == "image" and include_images:
+            subset = derive_image_subset(row)
+        else:
+            skipped_unsupported_data_type += 1
             continue
-        if str(row.get("data_type") or "").lower() != "video" or not is_multiple_choice(row):
-            skipped_non_video_or_non_mc += 1
+
+        if not is_multiple_choice(row):
+            skipped_non_multiple_choice += 1
             continue
 
         row_copy = dict(row)
         row_copy["question_category"] = subset
         row_copy["source_subset"] = subset
         row_copy["dataset_name"] = "video_r1_train"
+        row_copy["media_type"] = media_type
         filtered_rows.append(row_copy)
-        per_subset_counts[subset] += 1
+        per_subset_counts[f"{media_type}:{subset}"] += 1
+        media_type_counts[media_type] += 1
 
-    sampled_rows, sampling_stats = sample_rows_by_subset(
+    sampled_rows, sampling_stats = sample_rows_by_media_and_subset(
         rows=filtered_rows,
-        sample_ratio=args.sample_ratio,
+        sample_ratios=sample_ratios,
         seed=args.seed,
     )
 
-    download_stats = {"requested_video_files": 0}
+    download_stats = {
+        "requested_video_files": 0,
+        "requested_image_files": 0,
+        "requested_image_roots": 0,
+        "image_download_batches": 0,
+    }
     if not args.skip_download:
         if args.download_mode == "sampled-files":
             download_stats = download_sampled_video_files(
@@ -238,9 +375,22 @@ def main() -> None:
             download_dataset_files(
                 dataset_id=args.dataset_id,
                 local_dir=dataset_dir,
-                allow_patterns=[args.manifest_name, *(f"{subset}/**" for subset in selected_subsets)],
+                allow_patterns=[
+                    args.manifest_name,
+                    *(f"{subset}/**" for subset in selected_subsets),
+                ],
                 token=hf_token_from_env(),
             )
+            download_stats = {
+                "requested_video_files": 0,
+                "requested_image_files": 0,
+                **download_sampled_image_archives(
+                    dataset_id=args.dataset_id,
+                    local_dir=dataset_dir,
+                    manifest_name=args.manifest_name,
+                    sampled_rows=sampled_rows,
+                ),
+            }
 
     if not args.skip_archive_extract:
         archive_stats = extract_archives(dataset_dir)
@@ -295,16 +445,21 @@ def main() -> None:
         "dataset_id": args.dataset_id,
         "manifest": str(manifest_path.resolve()),
         "selected_subsets": selected_subsets,
+        "include_images": include_images,
         "filtered_rows": len(filtered_rows),
         "sampled_rows": len(sampled_rows),
         "sample_ratio": args.sample_ratio,
+        "video_sample_ratio": video_sample_ratio,
+        "image_sample_ratio": image_sample_ratio if include_images else 0.0,
         "sampling_seed": args.seed,
         "sampling_stats": sampling_stats,
         "download_mode": args.download_mode,
         "download_stats": download_stats,
         "processed_rows": len(processed_rows),
         "per_subset_counts": dict(per_subset_counts),
-        "skipped_non_video_or_non_multiple_choice": skipped_non_video_or_non_mc,
+        "per_media_type_counts": dict(media_type_counts),
+        "skipped_non_multiple_choice": skipped_non_multiple_choice,
+        "skipped_unsupported_data_type": skipped_unsupported_data_type,
         "num_frames_per_video": args.num_frames,
         "max_frame_size": args.max_frame_size,
         "processed_path": str(processed_path.resolve()),

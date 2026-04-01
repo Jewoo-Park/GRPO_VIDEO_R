@@ -4,7 +4,7 @@
 
 ## 데이터 & SFT merged 모델 이미 있을 때 (지금 상황)
 
-SFT LoRA를 베이스 모델에 merge한 모델(`sft/outputs/qwen25vl3b_lora_merged_from_sft40`)과 데이터(`data/video_r1/grpo/video_r1_grpo_train.jsonl`, `data/urban_video_bench/grpo/uvb_grpo_test.jsonl`)가 준비되어 있다면, 아래만 하면 됨.
+SFT LoRA를 베이스 모델에 merge한 모델(`sft/outputs/qwen25vl3b_lora_merged`)과 데이터(`data/video_r1/grpo/video_r1_grpo_train.jsonl`, `data/urban_video_bench/grpo/uvb_grpo_test.jsonl`)가 준비되어 있다면, 아래만 하면 됨.
 
 ### 실행
 
@@ -12,7 +12,7 @@ SFT LoRA를 베이스 모델에 merge한 모델(`sft/outputs/qwen25vl3b_lora_mer
 cd /path/to/GRPO_Video/src/scripts
 
 # merged SFT 모델 경로 지정
-export QWEN_PATH="/path/to/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged_from_sft40"
+export QWEN_PATH="/path/to/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged"
 
 # Optional stability knobs (recommended on cloud GPU instances)
 export TORCH_DTYPE="bfloat16"
@@ -30,7 +30,7 @@ bash apply_rotary_dtype_hotfix.sh
 
 ```bash
 export CUDA_VISIBLE_DEVICES=0,1,2,3
-export QWEN_PATH="/path/to/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged_from_sft40"
+export QWEN_PATH="/path/to/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged"
 ./run_grpo_uvb_answer_only.sh
 ```
 
@@ -77,7 +77,7 @@ bash src/scripts/run_grpo_uvb_answer_only_lora.sh
 
 | 변수 | 의미 | 예시 |
 |------|------|------|
-| `QWEN_PATH` | merged SFT 모델 경로 | `sft/outputs/qwen25vl3b_lora_merged_from_sft40` |
+| `QWEN_PATH` | merged SFT 모델 경로 | `sft/outputs/qwen25vl3b_lora_merged` |
 | `TRAIN_FILE` | 학습용 JSONL | `../../data/video_r1/grpo/video_r1_grpo_train.jsonl` |
 | `TEST_FILE` | 테스트용 JSONL (비우면 테스트 추론 안 함) | `../../data/urban_video_bench/grpo/uvb_grpo_test.jsonl` |
 | `OUTPUT_DIR` | 체크포인트/모델/테스트 결과 디렉터리 | `./outputs/uvb_grpo_answer_only` |

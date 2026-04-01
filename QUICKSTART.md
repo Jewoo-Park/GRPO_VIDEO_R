@@ -149,7 +149,7 @@ bash scripts/run_train.sh
 산출물:
 
 ```text
-sft/outputs/qwen25vl3b_lora_sft_40/
+sft/outputs/qwen25vl3b_lora_sft/
 ```
 
 이 디렉터리에는 SFT LoRA adapter가 저장된다.
@@ -169,7 +169,7 @@ bash scripts/run_merge.sh
 기본 merge 결과:
 
 ```text
-sft/outputs/qwen25vl3b_lora_merged_from_sft40/
+sft/outputs/qwen25vl3b_lora_merged/
 ```
 
 이 디렉터리가 Step 4의 `QWEN_PATH`가 된다.
@@ -181,7 +181,7 @@ sft/outputs/qwen25vl3b_lora_merged_from_sft40/
 레포 루트에서 실행:
 
 ```bash
-QWEN_PATH="$(pwd)/sft/outputs/qwen25vl3b_lora_merged_from_sft40" \
+QWEN_PATH="$(pwd)/sft/outputs/qwen25vl3b_lora_merged" \
 TRAIN_FILE="$(pwd)/data/video_r1/grpo/video_r1_grpo_train.jsonl" \
 TEST_FILE="$(pwd)/data/urban_video_bench/grpo/uvb_grpo_test.jsonl" \
 OUTPUT_DIR="$(pwd)/src/r1-v/outputs/video_r1_uvb_grpo_answer_only" \
@@ -227,7 +227,7 @@ sft/configs/merge_lora_grpo_run12.yaml
 예시 설정:
 
 ```yaml
-model_name_or_path: /absolute/path/to/sft/outputs/qwen25vl3b_lora_merged_from_sft40
+model_name_or_path: /absolute/path/to/sft/outputs/qwen25vl3b_lora_merged
 adapter_name_or_path: /absolute/path/to/src/r1-v/outputs/video_r1_uvb_grpo_answer_only
 export_dir: /absolute/path/to/src/r1-v/outputs/video_r1_uvb_grpo_answer_only_merged
 remap_adapter_keys: true
@@ -303,7 +303,7 @@ CONFIG_PATH=configs/merge_lora_qwen25vl3b.yaml bash scripts/run_merge.sh
 cd ..
 
 # 4. GRPO
-QWEN_PATH="$(pwd)/sft/outputs/qwen25vl3b_lora_merged_from_sft40" \
+QWEN_PATH="$(pwd)/sft/outputs/qwen25vl3b_lora_merged" \
 TRAIN_FILE="$(pwd)/data/video_r1/grpo/video_r1_grpo_train.jsonl" \
 TEST_FILE="$(pwd)/data/urban_video_bench/grpo/uvb_grpo_test.jsonl" \
 OUTPUT_DIR="$(pwd)/src/r1-v/outputs/video_r1_uvb_grpo_answer_only" \
@@ -335,7 +335,7 @@ python src/eval/uvb_eval_only.py \
 
 모델:
 
-- SFT merged model: `sft/outputs/qwen25vl3b_lora_merged_from_sft40/`
+- SFT merged model: `sft/outputs/qwen25vl3b_lora_merged/`
 - GRPO adapter output: `src/r1-v/outputs/video_r1_uvb_grpo_answer_only/`
 - GRPO merged model: `src/r1-v/outputs/video_r1_uvb_grpo_answer_only_merged/`
 

@@ -1,4 +1,4 @@
-model_name_or_path: /workspace/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged_from_sft40
-adapter_name_or_path: /workspace/GRPO_Video/src/r1-v/outputs/uvb_grpo_run12
-export_dir: /workspace/GRPO_Video/src/r1-v/outputs/uvb_grpo_run12_merged
+model_name_or_path: ./outputs/qwen25vl3b_lora_merged
+adapter_name_or_path: ../src/r1-v/outputs/uvb_grpo_run12
+export_dir: ../src/r1-v/outputs/uvb_grpo_run12_merged
 remap_adapter_keys: true

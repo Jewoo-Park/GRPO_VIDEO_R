@@ -3,6 +3,7 @@ train_files:
   - ./data/aqua_rat_multiple_choice.json
   - ./data/aqua_rat_open_form.json
 output_dir: ./outputs/qwen25vl3b_lora_sft
+merge_output_dir: ./outputs/qwen25vl3b_lora_merged
 
 max_length: 4096
 val_size: 0.05
@@ -26,18 +27,13 @@ save_steps: 200
 eval_steps: 200
 save_total_limit: 3
 gradient_checkpointing: true
+use_vision: false
+max_visual_items: 16
 
 lora_r: 64
 lora_alpha: 128
 lora_dropout: 0.05
-lora_target_modules:
-  - q_proj
-  - k_proj
-  - v_proj
-  - o_proj
-  - gate_proj
-  - up_proj
-  - down_proj
+lora_target_modules: auto
 
 # Available formats: answer, cot, long_cot
 # - CODE-style CoT is excluded when drop_code_cot=true.

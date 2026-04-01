@@ -45,7 +45,16 @@ def remap_adapter_keys_and_prepare_dir(adapter_name_or_path: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Merge LoRA adapter into base model")
-    parser.add_argument("--config", type=str, required=True, help="Path to merge config YAML")
+    parser.add_argument("--config", type=str, default=None, help="Path to merge config YAML")
+    parser.add_argument("--model-name-or-path", type=str, default=None, help="Base model or merged SFT model path")
+    parser.add_argument("--adapter-name-or-path", type=str, default=None, help="LoRA adapter directory")
+    parser.add_argument("--export-dir", type=str, default=None, help="Directory to save merged weights")
+    parser.add_argument(
+        "--remap-adapter-keys",
+        type=str,
+        default=None,
+        help="Override config and remap adapter keys before merge (true/false).",
+    )
     return parser.parse_args()
 
 
@@ -85,12 +94,23 @@ def get_base_model(model_name_or_path: str):
 
 def main() -> None:
     args = parse_args()
-    cfg = load_yaml(args.config)
+    if args.config is not None:
+        cfg = load_yaml(args.config)
+    else:
+        cfg = {}
 
-    model_name_or_path = cfg["model_name_or_path"]
-    adapter_name_or_path = cfg["adapter_name_or_path"]
-    export_dir = cfg["export_dir"]
+    model_name_or_path = args.model_name_or_path or cfg.get("model_name_or_path")
+    adapter_name_or_path = args.adapter_name_or_path or cfg.get("adapter_name_or_path")
+    export_dir = args.export_dir or cfg.get("export_dir")
     remap_adapter_keys = cfg.get("remap_adapter_keys", False)
+    if args.remap_adapter_keys is not None:
+        remap_adapter_keys = str(args.remap_adapter_keys).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    if not model_name_or_path or not adapter_name_or_path or not export_dir:
+        raise ValueError(
+            "model_name_or_path, adapter_name_or_path, and export_dir must be provided "
+            "either via --config or direct CLI flags."
+        )
 
     os.makedirs(export_dir, exist_ok=True)
 

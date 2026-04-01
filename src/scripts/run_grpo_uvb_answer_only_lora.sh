@@ -141,5 +141,5 @@ PYTHONPATH="./src" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" torchrun --npr
   --lora_r "${LORA_R}" \
   --lora_alpha "${LORA_ALPHA}" \
   --lora_dropout "${LORA_DROPOUT}" \
-  --lora_target_modules q_proj k_proj v_proj o_proj gate_proj up_proj down_proj \
+  --lora_target_modules q_proj k_proj v_proj o_proj \
   2>&1 | tee "${OUTPUT_DIR}/training_log.txt"

@@ -8,9 +8,9 @@
 
 | 항목 | 경로 |
 |------|------|
-| SFT LoRA 어댑터 | `sft/outputs/qwen25vl3b_lora_sft_40/` |
+| SFT LoRA 어댑터 | `sft/outputs/qwen25vl3b_lora_sft/` |
 | 백본 모델 | `Qwen/Qwen2.5-VL-3B-Instruct` (HuggingFace에서 자동 다운로드) |
-| merge 결과 | `sft/outputs/qwen25vl3b_lora_merged_from_sft40/` |
+| merge 결과 | `sft/outputs/qwen25vl3b_lora_merged/` |
 
 ---
 
@@ -79,8 +79,8 @@ pip install flash-attn --no-build-isolation --no-binary :all:
 
 ```yaml
 model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
-adapter_name_or_path: ./outputs/qwen25vl3b_lora_sft_40
-export_dir: ./outputs/qwen25vl3b_lora_merged_from_sft40
+adapter_name_or_path: ./outputs/qwen25vl3b_lora_sft
+export_dir: ./outputs/qwen25vl3b_lora_merged
 remap_adapter_keys: true
 ```
 
@@ -111,7 +111,7 @@ Loading checkpoint shards: 100%|███████| 2/2 [...]
 ## 6단계: merge 결과 검증
 
 ```bash
-ls -lh /workspace/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged_from_sft40/
+ls -lh /workspace/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged/
 ```
 
 정상 결과:
@@ -139,7 +139,7 @@ pip install flash-attn --no-build-isolation --no-binary :all:
 
 # GRPO 실행
 cd /workspace/GRPO_Video/src/scripts
-export QWEN_PATH="/workspace/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged_from_sft40"
+export QWEN_PATH="/workspace/GRPO_Video/sft/outputs/qwen25vl3b_lora_merged"
 export NUM_GPUS=3
 export TRAIN_NUM_GPUS=2
 export CUDA_VISIBLE_DEVICES=0,1,2

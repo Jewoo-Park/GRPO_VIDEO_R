@@ -1,6 +1,6 @@
-# Qwen2.5-VL-3B SFT-only Pipeline
+# Qwen2.5-VL-3B SFT Pipeline
 
-이 폴더는 ARM 레포의 SFT 데이터셋(`aqua_rat_multiple_choice`, `aqua_rat_open_form`)을 그대로 사용해서, `Qwen/Qwen2.5-VL-3B-Instruct`를 LoRA SFT 하기 위한 최소 파이프라인입니다.
+이 폴더는 `Qwen/Qwen2.5-VL-3B-Instruct`를 LoRA SFT 하기 위한 파이프라인입니다. 기존 `instruction/input/output` 텍스트 JSON뿐 아니라, 이미지/프레임이 포함된 JSON/JSONL도 처리할 수 있습니다.
 
 ## Folder structure
 
@@ -9,6 +9,7 @@
 - `configs/merge_lora_qwen25vl3b.yaml`: LoRA 병합 설정
 - `scripts/train_sft.py`: 학습 스크립트
 - `scripts/merge_lora.py`: LoRA 병합 스크립트
+- `scripts/run_pipeline.sh`: SFT -> merge 연속 실행 스크립트
 
 ## 1) Environment
 
@@ -23,12 +24,14 @@ pip install -r requirements.txt
 
 ```bash
 cd sft
-CUDA_VISIBLE_DEVICES=0,1 python scripts/train_sft.py --config configs/train_lora_qwen25vl3b.yaml
+CUDA_VISIBLE_DEVICES=0,1 python scripts/train_sft.py --config configs/train_lora_qwen25vl3b.yaml --use-vision false
 # or
 CUDA_VISIBLE_DEVICES=0,1 bash scripts/run_train.sh
 ```
 
 체크포인트/어댑터는 `outputs/qwen25vl3b_lora_sft`에 저장됩니다.
+
+`bash scripts/run_train.sh`는 실행 시 이미지/프레임 입력 사용 여부를 직접 묻습니다.
 
 ## 3) Merge LoRA adapter
 
@@ -41,11 +44,25 @@ bash scripts/run_merge.sh
 
 병합 모델은 `outputs/qwen25vl3b_lora_merged`에 저장됩니다.
 
+## 4) Train + Merge 한 번에 실행
+
+```bash
+cd sft
+CUDA_VISIBLE_DEVICES=0,1 bash scripts/run_pipeline.sh
+```
+
+기본적으로 SFT 이후 바로 merge까지 이어집니다.
+
 ## Notes
 
-- 데이터 포맷은 현재 ARM 레포 SFT 데이터셋과 동일한 `instruction/input/output` JSON list를 그대로 사용합니다.
+- 데이터 포맷은 아래 둘을 모두 지원합니다.
+  - 텍스트 SFT: `instruction/input/output` JSON list
+  - 멀티모달 SFT: `problem/solution` + `frames` 또는 `image`/`images` 필드가 있는 JSON/JSONL
 - Qwen2.5-VL-3B 로딩을 위해 `transformers>=4.51` 기준으로 작성했습니다.
-- 이 파이프라인은 텍스트 SFT 기준이며, 추후 이미지 샘플을 추가하려면 데이터 파서를 확장하면 됩니다.
+- `use_vision: true` 또는 `--use-vision true`일 때는 이미지/프레임을 실제로 로드해서 SFT에 사용합니다.
+- `lora_target_modules: auto`일 때는:
+  - 텍스트 모드: 언어 모듈만 LoRA 적용
+  - 비전 모드: 언어 + 비전 선형 모듈 전체에 LoRA 적용
 - 출력 태그 기반 학습을 지원합니다: `answer`, `cot`, `long_cot`.
 - `CODE` CoT는 기본값으로 학습에서 제외됩니다 (`drop_code_cot: true`).
 - `configs/train_lora_qwen25vl3b.yaml`에서 아래를 조정해 형식을 선택할 수 있습니다.

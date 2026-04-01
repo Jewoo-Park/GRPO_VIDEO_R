@@ -3,6 +3,7 @@ import os
 import hashlib
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, Optional
 from urllib.parse import urlparse
@@ -43,14 +44,36 @@ def download_dataset_files(
     token: Optional[str] = None,
 ) -> None:
     local_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_download(
-        repo_id=dataset_id,
-        repo_type="dataset",
-        local_dir=str(local_dir),
-        allow_patterns=allow_patterns,
-        token=token,
-        resume_download=True,
-    )
+    max_workers = int(os.getenv("HF_SNAPSHOT_MAX_WORKERS", "2"))
+    retries = int(os.getenv("HF_SNAPSHOT_RETRIES", "4"))
+    retry_sleep = float(os.getenv("HF_SNAPSHOT_RETRY_SLEEP", "5"))
+
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            snapshot_download(
+                repo_id=dataset_id,
+                repo_type="dataset",
+                local_dir=str(local_dir),
+                allow_patterns=allow_patterns,
+                token=token,
+                resume_download=True,
+                max_workers=max_workers,
+                etag_timeout=30,
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt >= retries:
+                break
+            print(
+                f"[download_dataset_files] snapshot_download failed "
+                f"(attempt {attempt}/{retries}) for {dataset_id}: {exc}"
+            )
+            time.sleep(retry_sleep * attempt)
+
+    if last_error is not None:
+        raise last_error
 
 
 def download_mp4_dataset(dataset_id: str, local_dir: Path, token: Optional[str] = None) -> None:
@@ -64,7 +87,11 @@ def download_mp4_dataset(dataset_id: str, local_dir: Path, token: Optional[str] 
 
 def build_video_index(video_root: Path) -> dict[str, Path]:
     index: dict[str, Path] = {}
-    for path in video_root.rglob("*.mp4"):
+    for path in video_root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in MEDIA_EXTENSIONS:
+            continue
         index.setdefault(path.name, path)
     return index
 
@@ -96,6 +123,14 @@ def resolve_video_path(
 
 def load_video_frames(video_path: Path, num_frames: int, max_size: int) -> list[Image.Image]:
     try:
+        if video_path.suffix.lower() in IMAGE_EXTENSIONS:
+            image = Image.open(video_path).convert("RGB")
+            if max(image.size) > max_size:
+                ratio = max_size / float(max(image.size))
+                resized = (max(1, int(image.size[0] * ratio)), max(1, int(image.size[1] * ratio)))
+                image = image.resize(resized, Image.Resampling.LANCZOS)
+            return [image]
+
         container = av.open(str(video_path))
         stream = container.streams.video[0]
 
@@ -159,7 +194,8 @@ def extract_frames_for_rows(
             output_dir.mkdir(parents=True, exist_ok=True)
 
             existing_frames = sorted(output_dir.glob("frame_*.jpg"))
-            if len(existing_frames) < num_frames:
+            needed_frames = 1 if resolved_video.suffix.lower() in IMAGE_EXTENSIONS else num_frames
+            if len(existing_frames) < needed_frames:
                 frames = load_video_frames(video_path=resolved_video, num_frames=num_frames, max_size=max_size)
                 for frame_idx, frame in enumerate(frames):
                     frame.save(output_dir / f"frame_{frame_idx:03d}.jpg", format="JPEG", quality=95)
@@ -187,6 +223,8 @@ def hf_token_from_env() -> Optional[str]:
 
 
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".webm", ".mov", ".avi")
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + IMAGE_EXTENSIONS
 
 
 def stable_name_from_url(url: str, prefix: str = "video") -> str:

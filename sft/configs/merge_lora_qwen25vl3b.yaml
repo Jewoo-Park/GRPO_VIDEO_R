@@ -1,6 +1,5 @@
 model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
-## 이 부분은 현재는 40% 샘플링 버전으로 진행하였으나 향후 교체 예정
-adapter_name_or_path: ./outputs/qwen25vl3b_lora_sft_40
-export_dir: ./outputs/qwen25vl3b_lora_merged_from_sft40
+adapter_name_or_path: ./outputs/qwen25vl3b_lora_sft
+export_dir: ./outputs/qwen25vl3b_lora_merged
 # Set to true if merge reports "missing adapter keys" (language_model.layers / visual.blocks mismatch)
 remap_adapter_keys: true

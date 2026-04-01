@@ -221,7 +221,7 @@ check_path "src/scripts/prepare_videommmu_grpo_data.sh"
 check_path "src/scripts/prepare_mmvu_grpo_data.sh"
 check_path "src/r1-v/configs/zero1_no_optimizer.json"
 
-MERGED_MODEL_DIR="${MERGED_MODEL_DIR:-sft/outputs/qwen25vl3b_lora_merged_from_sft40}"
+MERGED_MODEL_DIR="${MERGED_MODEL_DIR:-sft/outputs/qwen25vl3b_lora_merged}"
 echo ""
 echo "Merged model metadata check (${MERGED_MODEL_DIR})..."
 if [ -d "${MERGED_MODEL_DIR}" ]; then

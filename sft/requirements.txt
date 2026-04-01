@@ -5,3 +5,4 @@ datasets>=2.20.0
 peft>=0.12.0
 safetensors>=0.4.3
 pyyaml>=6.0
+Pillow>=10.0.0
